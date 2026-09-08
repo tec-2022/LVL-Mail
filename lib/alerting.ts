@@ -6,6 +6,8 @@ import {
   randomUUID,
   timingSafeEqual,
 } from "node:crypto";
+import { lookup } from "node:dns/promises";
+import { isForbiddenWebhookHostname, isPrivateOrReservedAddress } from "@/lib/security/webhook-target.mjs";
 
 export type AlertChannel = {
   id: string;
@@ -186,6 +188,35 @@ function publicChannel(row: StoredChannel): AlertChannel {
   };
 }
 
+async function assertPublicWebhookTarget(endpoint: string) {
+  let url: URL;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error("Invalid webhook URL");
+  }
+
+  const developmentLocalhost = process.env.NODE_ENV !== "production" && (
+    url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]"
+  );
+  if (url.protocol !== "https:" && !developmentLocalhost) throw new Error("Webhook URL must use HTTPS");
+  if (url.username || url.password) throw new Error("Credentials in webhook URLs are not allowed");
+  if (developmentLocalhost) return url;
+  if (isForbiddenWebhookHostname(url.hostname)) throw new Error("Webhook target is not a public host");
+
+  let addresses: Awaited<ReturnType<typeof lookup>>[] | Awaited<ReturnType<typeof lookup>>;
+  try {
+    addresses = await lookup(url.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error("Webhook hostname could not be resolved");
+  }
+  const resolved = Array.isArray(addresses) ? addresses : [addresses];
+  if (!resolved.length || resolved.some((entry) => isPrivateOrReservedAddress(entry.address))) {
+    throw new Error("Webhook target resolved to a private or reserved network");
+  }
+  return url;
+}
+
 export function alertingConfigured() {
   return Boolean(serviceConfig());
 }
@@ -242,16 +273,7 @@ export async function listAlertDeliveries(limit = 100): Promise<AlertDelivery[]>
 export async function createWebhookChannel(input: { name: string; endpoint: string }) {
   const name = input.name.trim();
   if (!name || name.length > 80) throw new Error("Invalid channel name");
-  let url: URL;
-  try {
-    url = new URL(input.endpoint.trim());
-  } catch {
-    throw new Error("Invalid webhook URL");
-  }
-  if (url.protocol !== "https:" && !(process.env.NODE_ENV !== "production" && url.hostname === "localhost")) {
-    throw new Error("Webhook URL must use HTTPS");
-  }
-  if (url.username || url.password) throw new Error("Credentials in webhook URLs are not allowed");
+  const url = await assertPublicWebhookTarget(input.endpoint.trim());
 
   const id = randomUUID();
   const signingSecret = randomBytes(32).toString("base64url");
@@ -381,6 +403,14 @@ async function deliverClaim(row: ClaimedDelivery) {
   if (!endpoint || !secret) {
     await finishDelivery(row.delivery_id, false, "channel_decryption_failed");
     return { ok: false as const, id: row.delivery_id, error: "channel_decryption_failed" };
+  }
+
+  try {
+    await assertPublicWebhookTarget(endpoint);
+  } catch (cause) {
+    const error = cause instanceof Error ? `unsafe_target:${cause.message}` : "unsafe_target";
+    await finishDelivery(row.delivery_id, false, error);
+    return { ok: false as const, id: row.delivery_id, error };
   }
 
   const timestamp = Math.floor(Date.now() / 1000).toString();
