@@ -37,6 +37,94 @@ async function supabaseRequest<T>(path: string, init: RequestInit = {}) {
   return await response.json() as T;
 }
 
+export type StoredMailApp = {
+  id: string;
+  name: string;
+  sender_local_part: string;
+  website_url: string | null;
+  tagline: string | null;
+  accent: string | null;
+  surface: string | null;
+  is_enabled: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export async function listStoredMailApps(): Promise<StoredMailApp[]> {
+  if (!supabaseConfigured()) return [];
+  return await supabaseRequest<StoredMailApp[]>(
+    "/rest/v1/mail_apps?select=id,name,sender_local_part,website_url,tagline,accent,surface,is_enabled,created_at,updated_at&order=created_at.asc",
+  );
+}
+
+export async function getStoredMailApp(appId: string): Promise<StoredMailApp | null> {
+  if (!supabaseConfigured()) return null;
+  const rows = await supabaseRequest<StoredMailApp[]>(
+    `/rest/v1/mail_apps?id=eq.${encodeURIComponent(appId)}&select=id,name,sender_local_part,website_url,tagline,accent,surface,is_enabled,created_at,updated_at&limit=1`,
+  );
+  return rows[0] ?? null;
+}
+
+export type StoredAppKey = {
+  id: string;
+  app_id: string;
+  key_prefix: string;
+  secret_hash: string;
+  revoked_at: string | null;
+};
+
+export async function getActiveAppKeyByPrefix(prefix: string): Promise<StoredAppKey | null> {
+  if (!supabaseConfigured()) return null;
+  const rows = await supabaseRequest<StoredAppKey[]>(
+    `/rest/v1/mail_app_keys?key_prefix=eq.${encodeURIComponent(prefix)}&revoked_at=is.null&select=id,app_id,key_prefix,secret_hash,revoked_at&limit=1`,
+  );
+  return rows[0] ?? null;
+}
+
+export async function touchAppKey(keyId: string) {
+  if (!supabaseConfigured()) return;
+  await supabaseRequest(
+    `/rest/v1/mail_app_keys?id=eq.${encodeURIComponent(keyId)}`,
+    {
+      method: "PATCH",
+      headers: { Prefer: "return=minimal" },
+      body: JSON.stringify({ last_used_at: new Date().toISOString() }),
+    },
+  );
+}
+
+export async function createStoredMailApp(input: {
+  id: string;
+  name: string;
+  senderLocalPart: string;
+  websiteUrl: string;
+  tagline: string;
+  accent: string;
+  surface: string;
+  keyPrefix: string;
+  secretHash: string;
+}) {
+  if (!supabaseConfigured()) throw new Error("Supabase is not configured");
+  const rows = await supabaseRequest<StoredMailApp[]>(
+    "/rest/v1/rpc/mail_create_app",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        p_id: input.id,
+        p_name: input.name,
+        p_sender_local_part: input.senderLocalPart,
+        p_website_url: input.websiteUrl,
+        p_tagline: input.tagline,
+        p_accent: input.accent,
+        p_surface: input.surface,
+        p_key_prefix: input.keyPrefix,
+        p_secret_hash: input.secretHash,
+      }),
+    },
+  );
+  return rows[0] ?? null;
+}
+
 export function recipientHash(email: string) {
   return createHash("sha256").update(email.trim().toLowerCase()).digest("hex");
 }

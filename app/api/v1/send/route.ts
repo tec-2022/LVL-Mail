@@ -1,13 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 import {
-  appBrands,
-  authenticateApp,
   deliveryPolicy,
   priorityForTemplate,
   renderTemplate,
   type TemplateKey,
 } from "@/lib/mail-policy";
+import {
+  authenticateRegisteredApp,
+  resolveRegisteredApp,
+} from "@/lib/app-registry";
 import {
   isRecipientSuppressed,
   recordAcceptedMessage,
@@ -49,8 +51,11 @@ export async function POST(request: NextRequest) {
     : {};
   const idempotencyKey = typeof body.idempotencyKey === "string" ? body.idempotencyKey.trim() : "";
 
-  if (!appBrands[appId]) return jsonError("Unknown appId", 400);
-  if (!authenticateApp(appId, request.headers.get("x-lvl-mail-key"))) return jsonError("Unauthorized application", 401);
+  const brand = await resolveRegisteredApp(appId);
+  if (!brand || !brand.isEnabled) return jsonError("Unknown or disabled appId", 400);
+  if (!await authenticateRegisteredApp(appId, request.headers.get("x-lvl-mail-key"))) {
+    return jsonError("Unauthorized application", 401);
+  }
   if (!template || !allowedTemplates.has(template)) return jsonError("Unsupported template", 400);
   if (!validEmail(to)) return jsonError("Invalid recipient", 400);
   if (idempotencyKey.length < 8 || idempotencyKey.length > 256) return jsonError("A valid idempotencyKey is required", 400);
@@ -76,13 +81,12 @@ export async function POST(request: NextRequest) {
 
   let rendered;
   try {
-    rendered = renderTemplate(appBrands[appId], template, variables);
+    rendered = renderTemplate(brand, template, variables);
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
   }
 
   const domain = process.env.LVL_MAIL_SENDING_DOMAIN ?? "mail.lvltechmx.com";
-  const brand = appBrands[appId];
   const resend = new Resend(resendKey);
 
   const { data, error } = await resend.emails.send(

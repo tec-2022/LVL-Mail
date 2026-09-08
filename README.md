@@ -1,21 +1,40 @@
 # LVL Mail
 
-Central email gateway and control plane for LVL Tech products. The intended production domain is `mail.lvltechmx.com`; Resend is the delivery provider behind LVL Mail rather than a credential copied into every application.
+Central email gateway and control plane for LVL Tech products. The intended production domain is `mail.lvltechmx.com`; Resend stays behind LVL Mail instead of being configured separately in every application.
 
 ```text
-NexMesa ─┐
-FINLAB ──┼──> LVL Mail ──> policy / templates / suppressions ──> Resend
-Cody ────┤        │
-Others ──┘        └──> Supabase observability
+Any web ──> LVL Mail ──> policy / templates / suppressions ──> Resend
+                  │
+                  └──> application registry + observability
 ```
 
-## Included in this foundation
+## Product principle: adding a web must be easy
+
+LVL Mail treats application onboarding as a one-field flow. In the control plane, open `/apps/new` and paste the website URL. The name is optional and branding can be customized later.
+
+LVL Mail automatically creates:
+
+- an application ID;
+- a sender under `mail.lvltechmx.com`;
+- an independent gateway API key;
+- the default security/transactional template set;
+- P0 behavior for confirmation, password reset and OTP;
+- an integration example ready to copy.
+
+A new application does **not** need its own Resend account, Resend API key, verified domain or DNS configuration.
+
+The generated gateway key is shown once. Only its SHA-256 hash is stored in `mail_app_keys`, so the original secret cannot be retrieved later from the database.
+
+## Included
 
 - Next.js 16.3.3 responsive administrative control plane.
-- Application identities for LVL Tech, NexMesa, FINLAB and Cody.
+- Dynamic application registry instead of a hardcoded project list.
+- One-field URL-first onboarding for new websites.
 - Server-owned email design system: applications send variables, not arbitrary HTML.
 - P0 policy for `verify-email`, `password-reset` and `otp`.
 - Per-application authentication using `x-lvl-mail-key`.
+- Database-backed hashed keys for newly registered applications.
+- Temporary legacy environment-key compatibility for the original built-in apps.
 - Mandatory idempotency forwarded to Resend.
 - HTTPS-only URLs in critical security templates.
 - Local suppression lookup before delivery when Supabase is available.
@@ -44,7 +63,7 @@ In development the dashboard may be used without admin credentials. In productio
 ```env
 RESEND_API_KEY=re_xxxxxxxxx
 RESEND_WEBHOOK_SECRET=whsec_xxxxxxxxx
-LVL_MAIL_APP_KEYS={"lvltech":"long-random-key","nexmesa":"long-random-key","finlab":"long-random-key","cody":"long-random-key"}
+LVL_MAIL_APP_KEYS={"lvltech":"legacy-key","nexmesa":"legacy-key","finlab":"legacy-key","cody":"legacy-key"}
 LVL_MAIL_SENDING_DOMAIN=mail.lvltechmx.com
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=replace-me
@@ -52,7 +71,37 @@ LVL_MAIL_ADMIN_USER=admin
 LVL_MAIL_ADMIN_PASSWORD=use-a-long-random-password
 ```
 
-All of these are server secrets. Do not expose them with a `NEXT_PUBLIC_` prefix.
+`LVL_MAIL_APP_KEYS` is now only a migration bridge for the original built-in applications. New applications get database-backed keys automatically and do not require a Vercel environment-variable change.
+
+All secrets remain server-side. Do not expose them with a `NEXT_PUBLIC_` prefix.
+
+## Application onboarding API
+
+The administrative UI calls:
+
+```text
+POST /api/admin/apps
+```
+
+Minimal payload:
+
+```json
+{
+  "websiteUrl": "https://myproduct.com"
+}
+```
+
+Optional fields:
+
+```json
+{
+  "websiteUrl": "https://myproduct.com",
+  "name": "My Product",
+  "accent": "#111827"
+}
+```
+
+The endpoint is protected with the same production administrator credentials used by the control plane. Creation is atomic: the app and its first key are created together through `mail_create_app()`.
 
 ## Sending API
 
@@ -69,13 +118,13 @@ Example confirmation email:
 
 ```json
 {
-  "appId": "nexmesa",
+  "appId": "my-product",
   "template": "verify-email",
   "to": "user@example.com",
   "idempotencyKey": "verify-user-0192ac",
   "variables": {
     "name": "Alex",
-    "confirmationUrl": "https://example.com/auth/confirm?token=...",
+    "confirmationUrl": "https://myproduct.com/auth/confirm?token=...",
     "expiresMinutes": "15"
   }
 }
@@ -85,7 +134,19 @@ Applications cannot choose their priority. `verify-email`, `password-reset` and 
 
 ### P0 behavior
 
-P0 is the authentication/security lane. LVL Mail never batches these requests. A failure of the optional Supabase observability layer does not prevent a valid P0 request from reaching Resend; provider-side suppressions and the send result remain authoritative.
+P0 is the authentication/security lane. LVL Mail never batches these requests. A failure of the optional observability layer does not prevent a valid P0 request from reaching Resend; provider-side suppressions and the send result remain authoritative.
+
+## Default templates
+
+Every newly registered application automatically inherits:
+
+- `verify-email`
+- `password-reset`
+- `otp`
+- `transactional-notice`
+- `notification`
+
+There is no per-app setup step required to activate these templates. The application brand is applied at render time.
 
 ## Resend webhook
 
@@ -102,13 +163,15 @@ Set the endpoint signing secret as `RESEND_WEBHOOK_SECRET`. LVL Mail verifies th
 `supabase/schema.sql` creates:
 
 - `mail_apps`
+- `mail_app_keys`
 - `mail_messages`
 - `mail_events`
 - `mail_suppressions`
+- `mail_create_app()`
 - `mail_dashboard_metrics()`
 - `mail_app_health()`
 
-RLS is enabled and no public table policies are created. Metric RPCs are executable only by `service_role`.
+`mail_create_app()` atomically creates the application and its first hashed gateway key. RLS is enabled and no public table policies are created. Administrative and metric RPCs are executable only by `service_role`.
 
 The schema is intentionally committed but **not automatically applied**. Select the dedicated LVL Mail Supabase project first.
 
@@ -117,29 +180,31 @@ The schema is intentionally committed but **not automatically applied**. Select 
 Routes:
 
 - `/` — real 24-hour metrics and priority engine.
-- `/apps` — application/sender identities.
-- `/templates` — centralized template catalog.
+- `/apps` — dynamic application/sender identities.
+- `/apps/new` — URL-first application onboarding.
+- `/templates` — centralized templates inherited automatically by new apps.
 - `/activity` — persisted Resend event stream.
 - `/reputation` — per-app bounce/complaint health.
 - `/settings` — deployment and secret configuration.
 
-The dashboard is protected by Basic Auth at the server boundary in production. The sending API and webhook are not placed behind that UI authentication because they use their own authentication/signature mechanisms.
+The dashboard is protected by Basic Auth at the server boundary in production. Administrative APIs independently verify the same credentials because `/api/*` is excluded from the UI proxy. The sending API and webhook use their own application-key/signature mechanisms.
 
 ## Production checklist
 
-1. Verify `mail.lvltechmx.com` in Resend and publish the SPF/DKIM DNS records provided by Resend.
-2. Deploy LVL Mail over HTTPS and attach `mail.lvltechmx.com`.
-3. Add every server environment variable listed above.
-4. Generate a different long random gateway key for every calling application.
-5. Select the dedicated LVL Mail Supabase project and apply `supabase/schema.sql`.
-6. Configure the signed Resend webhook endpoint.
+1. Select the dedicated LVL Mail Supabase project and apply `supabase/schema.sql`.
+2. Verify `mail.lvltechmx.com` in Resend and publish the SPF/DKIM DNS records provided by Resend.
+3. Deploy LVL Mail over HTTPS and attach `mail.lvltechmx.com`.
+4. Add the server environment variables listed above.
+5. Configure the signed Resend webhook endpoint.
+6. Add a web through `/apps/new` and save the one-time gateway key.
 7. Send one test for each critical template and verify accepted → delivered events in the dashboard.
 8. Add persistent per-app rate limiting/circuit-breaker rules before enabling marketing or high-volume notification traffic.
 
 ## Security decisions
 
 - The Resend API key exists only in LVL Mail.
-- Each application can be revoked independently.
+- New application secrets are random, independent and stored only as hashes.
+- Each application can be revoked independently once key-management controls are enabled.
 - Critical priority is derived from the template key server-side.
 - Applications cannot inject arbitrary email HTML.
 - Security CTA URLs must use HTTPS.
@@ -147,6 +212,6 @@ The dashboard is protected by Basic Auth at the server boundary in production. T
 - Suppression state is checked before sending when local persistence is healthy.
 - Recipient addresses are hashed before persistence.
 - Resend webhook signatures are verified before event processing.
-- The production admin UI fails closed without credentials.
+- The production admin UI and onboarding API fail closed without credentials.
 - No public Supabase RLS policies are created.
 - Marketing remains disabled until reputation protections for bulk traffic are complete.

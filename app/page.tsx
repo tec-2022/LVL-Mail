@@ -1,24 +1,22 @@
 import Link from "next/link";
 import { AppShell, PageHeader, PriorityBadge } from "@/components/app-shell";
 import { Icon } from "@/components/icons";
-import { appBrands } from "@/lib/mail-policy";
+import { listRegisteredApps } from "@/lib/app-registry";
 import { getDashboardMetrics } from "@/lib/supabase-rest";
-
-const apps = Object.values(appBrands);
 
 function percent(value: number | null) {
   return value === null ? "—" : `${value.toFixed(1)}%`;
 }
 
 export default async function Home() {
-  const metrics = await getDashboardMetrics();
+  const [metrics, apps] = await Promise.all([getDashboardMetrics(), listRegisteredApps()]);
   const deliveryRate = metrics && metrics.accepted > 0
     ? (metrics.delivered / metrics.accepted) * 100
     : null;
 
   return (
     <AppShell active="Resumen">
-      <PageHeader eyebrow="Estado del sistema" title="Correo crítico, primero." description="LVL Mail centraliza el envío de todas nuestras aplicaciones y reserva la vía rápida para confirmaciones, recuperación y OTP." action={<Link className="button" href="/templates">Ver plantillas <Icon name="arrow" width="16" height="16" /></Link>} />
+      <PageHeader eyebrow="Estado del sistema" title="Correo crítico, primero." description="LVL Mail centraliza el envío de todas nuestras aplicaciones y reserva la vía rápida para confirmaciones, recuperación y OTP." action={<Link className="button" href="/apps/new">Agregar web <Icon name="arrow" width="16" height="16" /></Link>} />
       <section className="metrics-grid">
         <article className="metric-card featured"><div className="metric-icon"><Icon name="bolt" width="20" height="20" /></div><span>Vía crítica P0</span><strong>Activa</strong><small>Sin batching para autenticación</small></article>
         <article className="metric-card"><span>Aceptados · 24 h</span><strong>{metrics?.accepted ?? "—"}</strong><small>{metrics ? `${metrics.bounced} rebotes · ${metrics.complained} complaints` : "Disponible al conectar Supabase + webhook"}</small></article>
@@ -51,7 +49,7 @@ export default async function Home() {
       <section className="panel">
         <div className="panel-head"><div><span className="eyebrow">APLICACIONES</span><h2>Identidades de correo</h2></div><Link href="/apps" className="text-link">Administrar aplicaciones →</Link></div>
         <div className="app-table">
-          {apps.map((app) => <div className="app-row" key={app.id}><div className="app-logo" style={{ background: app.surface, color: app.accent }}>{app.name.slice(0,2).toUpperCase()}</div><div className="app-name"><strong>{app.name}</strong><span>{app.tagline}</span></div><code>{app.senderLocalPart}@mail.lvltechmx.com</code><span className="pill neutral">Gateway</span></div>)}
+          {apps.map((app) => <div className="app-row" key={app.id}><div className="app-logo" style={{ background: app.surface, color: app.accent }}>{app.name.slice(0,2).toUpperCase()}</div><div className="app-name"><strong>{app.name}</strong><span>{app.tagline}</span></div><code>{app.senderLocalPart}@mail.lvltechmx.com</code><span className={app.isEnabled ? "pill success" : "pill neutral"}>{app.isEnabled ? "Activa" : "Pausada"}</span></div>)}
         </div>
       </section>
     </AppShell>
