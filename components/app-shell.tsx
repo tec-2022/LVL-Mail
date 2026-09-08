@@ -11,6 +11,7 @@ const nav: ReadonlyArray<readonly [string, string, string, Permission]> = [
   ["/activity", "Actividad", "activity", "messages.read"],
   ["/reputation", "Reputación", "shield", "reputation.read"],
   ["/operations", "Operaciones", "activity", "incidents.read"],
+  ["/alerts", "Alertas", "shield", "incidents.read"],
   ["/team", "Equipo", "apps", "team.read"],
   ["/settings", "Configuración", "settings", "security.manage"],
 ];
