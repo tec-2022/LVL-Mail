@@ -25,6 +25,8 @@ import { reputationAllows } from "@/lib/reputation-guard";
 import { getMailProvider } from "@/lib/mail-provider";
 import { getPublishedTemplateVersion, renderStudioTemplate, versionToCopy } from "@/lib/template-studio";
 import { attachTemplateAttribution, type TemplateSource } from "@/lib/template-attribution";
+import { attachProvider } from "@/lib/operations";
+import { saveRecoveryEnvelope } from "@/lib/recovery-envelope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -95,8 +97,6 @@ export async function POST(request: NextRequest) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
   }
 
-  const provider = getMailProvider();
-  if (!provider) return jsonError("Mail provider is not configured", 503, { code: "provider_unavailable" });
   if (!trackingConfigured()) {
     return jsonError("Mandatory mail tracking is not configured", 503, { code: "tracking_required" });
   }
@@ -225,9 +225,42 @@ export async function POST(request: NextRequest) {
     // The send remains tracked. Provider-side suppression remains authoritative.
   }
 
+  const provider = getMailProvider();
+  if (!provider) {
+    await Promise.allSettled([
+      setTrackedMessageResult({
+        trackingId: tracked.id,
+        status: "provider_rejected",
+        failureCode: "provider_unavailable",
+      }),
+      recordProviderOutcome(appId, false),
+    ]);
+    return jsonError("Mail provider is not configured", 503, {
+      code: "provider_unavailable",
+      trackingId: tracked.id,
+      appId,
+    });
+  }
+
   const domain = process.env.LVL_MAIL_SENDING_DOMAIN ?? "mail.lvltechmx.com";
+  const from = `${brand.name} <${brand.senderLocalPart}@${domain}>`;
+  const recoveryStored = await saveRecoveryEnvelope({
+    messageId: tracked.id,
+    payload: {
+      from,
+      to,
+      subject: rendered.subject,
+      html: rendered.html,
+      text: rendered.text,
+      replyTo: null,
+      templateKey: template,
+      templateSource,
+      templateVersion,
+    },
+  }).catch(() => false);
+
   const result = await provider.send({
-    from: `${brand.name} <${brand.senderLocalPart}@${domain}>`,
+    from,
     to,
     subject: rendered.subject,
     html: rendered.html,
@@ -252,6 +285,7 @@ export async function POST(request: NextRequest) {
 
   if (!result.ok) {
     await Promise.allSettled([
+      attachProvider(tracked.id, result.provider),
       setTrackedMessageResult({
         trackingId: tracked.id,
         status: "provider_rejected",
@@ -264,16 +298,20 @@ export async function POST(request: NextRequest) {
       provider: result.provider,
       trackingId: tracked.id,
       appId,
+      recovery: recoveryStored ? "available" : "unavailable",
     });
   }
 
   let trackingState: "ready" | "event-reconciliation" = "ready";
   try {
-    await setTrackedMessageResult({
-      trackingId: tracked.id,
-      providerId: result.id,
-      status: "accepted",
-    });
+    await Promise.all([
+      attachProvider(tracked.id, result.provider),
+      setTrackedMessageResult({
+        trackingId: tracked.id,
+        providerId: result.id,
+        status: "accepted",
+      }),
+    ]);
   } catch {
     trackingState = "event-reconciliation";
   }
@@ -292,6 +330,7 @@ export async function POST(request: NextRequest) {
     status: "accepted",
     delivery: policy,
     tracking: trackingState,
+    recovery: recoveryStored ? "encrypted" : "not-stored",
     reputation: reputation.state.reputation_state,
     quota: {
       minuteUsed: budget.minute_used,
