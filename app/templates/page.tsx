@@ -10,7 +10,8 @@ const templates = [
 ] as const;
 
 export default function TemplatesPage() {
-  return <AppShell active="Plantillas"><PageHeader eyebrow="Design system" title="Plantillas centralizadas" description="Las aplicaciones solo envían datos. LVL Mail controla estructura, accesibilidad, marca y prioridad." />
-    <section className="template-grid">{templates.map(([key,name,desc,p]) => <article className="template-card" key={key}><div className="template-preview"><div className="mini-logo"/><div className="mini-line wide"/><div className="mini-line"/><div className="mini-button"/></div><div className="template-info"><div className="template-title"><h2>{name}</h2><PriorityBadge priority={p}/></div><code>{key}</code><p>{desc}</p><div className="template-meta"><span>Responsive</span><span>Texto plano</span><span>Branding por app</span></div></div></article>)}</section>
+  return <AppShell active="Plantillas"><PageHeader eyebrow="Design system" title="Plantillas centralizadas" description="Toda web nueva hereda estas plantillas automáticamente. Solo envía datos; LVL Mail controla estructura, accesibilidad, marca y prioridad." />
+    <section className="platform-notice"><strong>Sin configuración por web</strong><span>Al agregar una aplicación, confirmación, recuperación, OTP, transaccional y notificación quedan disponibles inmediatamente.</span></section>
+    <section className="template-grid">{templates.map(([key,name,desc,p]) => <article className="template-card" key={key}><div className="template-preview"><div className="mini-logo"/><div className="mini-line wide"/><div className="mini-line"/><div className="mini-button"/></div><div className="template-info"><div className="template-title"><h2>{name}</h2><PriorityBadge priority={p}/></div><code>{key}</code><p>{desc}</p><div className="template-meta"><span>Responsive</span><span>Texto plano</span><span>Branding por app</span><span>Auto-heredada</span></div></div></article>)}</section>
   </AppShell>;
 }
