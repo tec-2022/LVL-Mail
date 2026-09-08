@@ -1,8 +1,10 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { authProxyConfigured, updateAuthSession } from "@/lib/supabase/auth-proxy";
 import { isTrustedMutation } from "@/lib/security/origin.mjs";
+
+const requestIdPattern = /^[A-Za-z0-9._:-]{1,128}$/;
 
 function safeEqual(left: string, right: string) {
   const a = Buffer.from(left);
@@ -10,12 +12,32 @@ function safeEqual(left: string, right: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function challenge() {
+function requestIdFor(request: NextRequest) {
+  for (const candidate of [request.headers.get("x-request-id"), request.headers.get("x-vercel-id")]) {
+    const value = candidate?.trim();
+    if (value && requestIdPattern.test(value)) return value;
+  }
+  return randomUUID();
+}
+
+function attachResponseRequestId(response: NextResponse, requestId: string) {
+  response.headers.set("X-Request-Id", requestId);
+  return response;
+}
+
+function nextWithRequestId(request: NextRequest, requestId: string) {
+  const headers = new Headers(request.headers);
+  headers.set("x-request-id", requestId);
+  return attachResponseRequestId(NextResponse.next({ request: { headers } }), requestId);
+}
+
+function challenge(requestId: string) {
   return new NextResponse("Authentication required", {
     status: 401,
     headers: {
       "WWW-Authenticate": 'Basic realm="LVL Mail break-glass", charset="UTF-8"',
       "Cache-Control": "no-store",
+      "X-Request-Id": requestId,
     },
   });
 }
@@ -38,23 +60,23 @@ function validBreakGlass(request: NextRequest) {
   }
 }
 
-function legacyBreakGlass(request: NextRequest) {
+function legacyBreakGlass(request: NextRequest, requestId: string) {
   const expectedUser = process.env.LVL_MAIL_ADMIN_USER;
   const expectedPassword = process.env.LVL_MAIL_ADMIN_PASSWORD;
 
   if (!expectedUser || !expectedPassword) {
-    if (process.env.NODE_ENV !== "production") return NextResponse.next({ request });
+    if (process.env.NODE_ENV !== "production") return nextWithRequestId(request, requestId);
     return new NextResponse("LVL Mail IAM is not configured", {
       status: 503,
-      headers: { "Cache-Control": "no-store" },
+      headers: { "Cache-Control": "no-store", "X-Request-Id": requestId },
     });
   }
 
-  if (!validBreakGlass(request)) return challenge();
-  return NextResponse.next({ request });
+  if (!validBreakGlass(request)) return challenge(requestId);
+  return nextWithRequestId(request, requestId);
 }
 
-function secureApiMutation(request: NextRequest) {
+function secureApiMutation(request: NextRequest, requestId: string) {
   const pathname = request.nextUrl.pathname;
   const protectedBoundary = pathname === "/api/admin" || pathname.startsWith("/api/admin/")
     || pathname === "/api/auth" || pathname.startsWith("/api/auth/");
@@ -74,21 +96,26 @@ function secureApiMutation(request: NextRequest) {
 
   return NextResponse.json(
     { ok: false, error: "Untrusted request origin", code: "origin_forbidden" },
-    { status: 403, headers: { "Cache-Control": "no-store" } },
+    { status: 403, headers: { "Cache-Control": "no-store", "X-Request-Id": requestId } },
   );
 }
 
 export async function proxy(request: NextRequest) {
+  const requestId = requestIdFor(request);
+
   if (request.nextUrl.pathname.startsWith("/api/")) {
-    const blocked = secureApiMutation(request);
-    return blocked ?? NextResponse.next({ request });
+    const blocked = secureApiMutation(request, requestId);
+    return blocked ?? nextWithRequestId(request, requestId);
   }
 
   // Break-glass remains usable during IAM bootstrap even after Supabase Auth is
   // configured. Disable it explicitly once staff login has been validated.
-  if (validBreakGlass(request)) return NextResponse.next({ request });
-  if (authProxyConfigured()) return await updateAuthSession(request);
-  return legacyBreakGlass(request);
+  if (validBreakGlass(request)) return nextWithRequestId(request, requestId);
+  if (authProxyConfigured()) {
+    const response = await updateAuthSession(request);
+    return attachResponseRequestId(response, requestId);
+  }
+  return legacyBreakGlass(request, requestId);
 }
 
 export const config = {
