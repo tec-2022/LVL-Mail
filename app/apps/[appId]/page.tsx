@@ -10,6 +10,7 @@ import {
   listAuditEntries,
   listTemplateSettings,
 } from "@/lib/control-plane";
+import { getReputationState } from "@/lib/reputation-guard";
 
 export const metadata = { title: "Control de aplicación" };
 
@@ -32,19 +33,21 @@ export default async function AppTrackingPage({ params }: { params: Promise<{ ap
   const app = await resolveRegisteredApp(appId);
   if (!app) notFound();
 
-  const [summary, messages, policy, keys, templates, audit] = await Promise.all([
+  const [summary, messages, policy, keys, templates, audit, reputation] = await Promise.all([
     getAppTrackingSummary(appId),
     getAppTrackedMessages(appId, 100),
     getAppPolicy(appId),
     listAppKeys(appId),
     listTemplateSettings(appId),
     listAuditEntries(appId, 40),
+    getReputationState(appId),
   ]);
 
   const sender = `${app.senderLocalPart}@mail.lvltechmx.com`;
+  const reputationLabel = reputation.reputation_state === "healthy" ? "Reputación saludable" : reputation.reputation_state === "watch" ? "Reputación en observación" : "Tráfico no crítico restringido";
 
   return <AppShell active="Aplicaciones"><PageHeader eyebrow="Application control plane" title={app.name} description="Administra entrega, reputación, plantillas, credenciales e integración de esta web desde un solo lugar." action={<Link className="secondary-button" href="/apps">← Aplicaciones</Link>} />
-    <section className="panel app-detail-head"><div className="app-logo large" style={{background:app.surface,color:app.accent}}>{app.name.slice(0,2).toUpperCase()}</div><div><div className="app-detail-title"><h2>{sender}</h2><span className={policy.mode === "live" ? "pill success" : policy.mode === "test" ? "pill warning" : "pill neutral"}>{policy.mode === "live" ? "Live" : policy.mode === "test" ? "Test" : "Pausada"}</span></div><p>{app.websiteUrl ?? app.tagline}</p></div></section>
+    <section className="panel app-detail-head"><div className="app-logo large" style={{background:app.surface,color:app.accent}}>{app.name.slice(0,2).toUpperCase()}</div><div><div className="app-detail-title"><h2>{sender}</h2><span className={policy.mode === "live" ? "pill success" : policy.mode === "test" ? "pill warning" : "pill neutral"}>{policy.mode === "live" ? "Live" : policy.mode === "test" ? "Test" : "Pausada"}</span><span className={reputation.reputation_state === "healthy" ? "pill success" : "pill warning"}>{reputationLabel}</span></div><p>{app.websiteUrl ?? app.tagline}</p></div></section>
 
     <section className="tracking-summary">
       <article className="tracking-kpi"><span>Correos · 30 días</span><strong>{summary?.total_30d ?? "—"}</strong><small>Todos los intentos válidos</small></article>
