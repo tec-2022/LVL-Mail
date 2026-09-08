@@ -4,7 +4,7 @@
 
 **Central transactional email infrastructure for LVL Tech products.**
 
-One gateway for delivery, templates, tracking, reputation, recovery and operational control — without coupling each application directly to an email provider.
+One gateway for delivery, templates, tracking, reputation, recovery, alerting and operational control — without coupling each application directly to an email provider.
 
 [![CI](https://github.com/tec-2022/LVL-Mail/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tec-2022/LVL-Mail/actions/workflows/ci.yml)
 ![Next.js](https://img.shields.io/badge/Next.js-16-black?logo=next.js)
@@ -34,6 +34,7 @@ flowchart LR
     B --> E[Tracking Ledger]
     B --> F[Reputation Guard]
     B --> G[Operations & Recovery]
+    G --> J[Alerting Center]
     C --> H[Provider Adapter]
     D --> H
     E --> H
@@ -54,6 +55,7 @@ A shared provider account is simple at first, but it creates platform-level risk
 - Bounce and complaint behavior is observed per application.
 - Safe Replay never reuses authentication credentials.
 - Staff access is invite-only, role-based and optionally scoped to specific applications.
+- Incidents produce persistent, independently routable alerts.
 - Provider-specific behavior stays behind an adapter instead of leaking into product code.
 
 ## Platform capabilities
@@ -151,6 +153,29 @@ Signals include:
 - Open → Acknowledged → Resolved incident lifecycle;
 - actor-attributed incident timeline.
 
+### Alerting & Notification Center
+
+Incident lifecycle events feed a separate alerting layer so an email-provider failure does not hide its own incident.
+
+Capabilities include:
+
+- persistent in-app alert inbox;
+- immutable alert events derived from incident events;
+- per-application / per-incident routing rules;
+- Warning / Critical severity thresholds;
+- configurable open, escalation and recovery notifications;
+- cooldown for repetitive incident openings;
+- persistent delivery queue with atomic claims;
+- exponential retry with finite retry budget;
+- optional external webhooks;
+- AES-256-GCM encryption for webhook endpoints/signing secrets at rest;
+- HMAC-SHA256 signed webhook requests;
+- private/reserved network checks to reduce SSRF exposure.
+
+Escalations and recovery notifications deliberately bypass cooldown.
+
+Webhook contract and verification guidance: [`docs/ALERTING.md`](docs/ALERTING.md).
+
 ### Search & Recovery
 
 The operational workbench can search by:
@@ -192,7 +217,7 @@ LVL Mail uses Supabase Auth for staff identity and server-side membership for au
 | Role | Access |
 |---|---|
 | **Owner** | Full platform, team and security control |
-| **Admin** | Applications, templates, keys and operations |
+| **Admin** | Applications, templates, keys, alert rules and operations |
 | **Operator** | Operational investigation, incidents, test sends and Safe Replay |
 | **Viewer** | Read-only operational access |
 
@@ -201,6 +226,8 @@ Owner/Admin remain global. Operator/Viewer can be either global or explicitly sc
 Authorization does not trust client-supplied roles or `user_metadata`. Membership state is resolved server-side so disabling a user, changing a role or changing app scopes takes effect on the next privileged request.
 
 The final active Owner is protected from accidental demotion or disablement.
+
+More detail: [`docs/IAM-DESIGN.md`](docs/IAM-DESIGN.md).
 
 ## Provider abstraction
 
@@ -249,6 +276,33 @@ x-lvl-mail-key: <application-gateway-key>
 
 The application key authenticates the calling product. Template, priority and policy remain server-owned.
 
+## Security & quality gates
+
+Security invariants are enforced in code and CI, not only documented.
+
+Current gates include:
+
+- exact same-origin protection for unsafe staff/API mutations;
+- Fetch Metadata / origin validation against CSRF;
+- CSP, HSTS and restrictive browser security headers;
+- `/api/health/live` and fail-closed `/api/health/ready` endpoints;
+- Node security tests for request-origin and webhook network guards;
+- SQL privilege regression scan across `supabase/**/*.sql`;
+- CI rejection of `SECURITY DEFINER` regressions and public Data API grants;
+- lint and production build required after security gates.
+
+CI order:
+
+```text
+npm test
+  ↓
+SQL privilege gate
+  ↓
+lint
+  ↓
+production build
+```
+
 ## Technology
 
 - **Next.js 16** — control plane and server routes
@@ -256,7 +310,7 @@ The application key authenticates the calling product. Template, priority and po
 - **React 19** — operator interface
 - **Supabase / PostgreSQL** — persistence, Auth and operational data
 - **Resend** — current delivery provider behind the adapter layer
-- **GitHub Actions** — CI
+- **GitHub Actions** — security gates, lint and production build
 
 ## Local development
 
@@ -275,6 +329,8 @@ Open `http://localhost:3000`.
 Useful commands:
 
 ```bash
+npm test
+npm run check:sql-security
 npm run lint
 npm run build
 ```
@@ -298,14 +354,16 @@ SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=replace-me
 
 LVL_MAIL_RECOVERY_KEY=replace-with-32-byte-base64-key
+LVL_MAIL_ALERT_ENCRYPTION_KEY=replace-with-32-byte-base64-key
 LVL_MAIL_CRON_SECRET=replace-with-an-independent-long-random-secret
+LVL_MAIL_ALERT_DISPATCH_SECRET=replace-with-an-independent-long-random-secret
 
 LVL_MAIL_BREAK_GLASS_ENABLED=true
 LVL_MAIL_ADMIN_USER=admin
 LVL_MAIL_ADMIN_PASSWORD=replace-with-a-long-random-password
 ```
 
-`SUPABASE_SERVICE_ROLE_KEY`, provider credentials, recovery keys, scheduler secrets and break-glass credentials are strictly server-side.
+`SUPABASE_SERVICE_ROLE_KEY`, provider credentials, recovery/alert encryption keys, scheduler secrets and break-glass credentials are strictly server-side.
 
 ## Control plane
 
@@ -319,6 +377,7 @@ LVL_MAIL_ADMIN_PASSWORD=replace-with-a-long-random-password
 | `/activity` | Search & Recovery |
 | `/reputation` | Deliverability health |
 | `/operations` | SLOs and incidents |
+| `/alerts` | Alert inbox, channels, rules and delivery queue |
 | `/team` | Staff, roles and application scopes |
 | `/settings` | Infrastructure/security state |
 
@@ -338,30 +397,31 @@ Core invariants:
 - tracking is mandatory;
 - clear recipient addresses are avoided in the ordinary ledger;
 - recovery payloads are encrypted and short-lived;
+- alert webhook credentials are encrypted at rest;
 - P0 credentials are never replayed;
-- webhook signatures are verified before reconciliation;
+- provider webhook signatures are verified before reconciliation;
+- external alert webhooks are signed and network-guarded;
 - marketing remains disabled until dedicated consent and unsubscribe controls exist.
-
-More detail: [`docs/IAM-DESIGN.md`](docs/IAM-DESIGN.md).
 
 ## Repository status
 
 > **Pre-production infrastructure.**
 
-The control plane, policy model, tracking architecture, Template Studio, reliability engine, recovery workflow and IAM model are implemented in code. Production infrastructure is intentionally not connected yet.
+The control plane, policy model, tracking architecture, Template Studio, reliability engine, alerting center, recovery workflow, IAM model and security quality gates are implemented in code. Production infrastructure is intentionally not connected yet.
 
 Still required before live traffic:
 
 1. select the dedicated Supabase project;
-2. apply reviewed migrations;
+2. consolidate and apply reviewed production migrations;
 3. configure production Auth and bootstrap the first Owner;
 4. validate scoped RBAC and audit behavior;
 5. verify `mail.lvltechmx.com` with SPF/DKIM/DMARC;
 6. configure signed provider webhooks;
 7. deploy the control plane over HTTPS;
-8. configure reliability scheduling and alerting;
-9. connect one LVL Tech application first and validate P0 end-to-end;
-10. complete production-readiness checks before expanding traffic.
+8. configure reliability and alert dispatch schedulers;
+9. validate alert delivery independently from the email provider;
+10. connect one LVL Tech application first and validate P0 end-to-end;
+11. complete production-readiness/rollback checks before expanding traffic.
 
 ## Design philosophy
 
