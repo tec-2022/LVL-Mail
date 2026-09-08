@@ -16,6 +16,7 @@ type Filters = {
   query: string;
   appId: string;
   templateKey: string;
+  templateVersion: string;
   status: string;
   providerName: string;
   recipient: string;
@@ -27,6 +28,7 @@ const emptyFilters: Filters = {
   query: "",
   appId: "",
   templateKey: "",
+  templateVersion: "",
   status: "",
   providerName: "",
   recipient: "",
@@ -99,6 +101,7 @@ export function SearchWorkbench({ apps, providers, initialMessages }: Props) {
         <label className="field search-wide"><span>Tracking / Provider ID / Idempotency</span><input value={filters.query} onChange={(event) => setFilters({ ...filters, query: event.target.value })} placeholder="UUID, provider ID o idempotency key" /></label>
         <label className="field"><span>Aplicación</span><select value={filters.appId} onChange={(event) => setFilters({ ...filters, appId: event.target.value })}><option value="">Todas</option>{apps.map((app) => <option key={app.id} value={app.id}>{app.name}</option>)}</select></label>
         <label className="field"><span>Plantilla</span><select value={filters.templateKey} onChange={(event) => setFilters({ ...filters, templateKey: event.target.value })}><option value="">Todas</option><option value="verify-email">Confirmar correo</option><option value="password-reset">Recuperar contraseña</option><option value="otp">OTP</option><option value="transactional-notice">Transaccional</option><option value="notification">Notificación</option></select></label>
+        <label className="field"><span>Versión</span><input type="number" min="1" value={filters.templateVersion} onChange={(event) => setFilters({ ...filters, templateVersion: event.target.value })} placeholder="v#" /></label>
         <label className="field"><span>Estado</span><select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="">Todos</option>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="field"><span>Proveedor</span><select value={filters.providerName} onChange={(event) => setFilters({ ...filters, providerName: event.target.value })}><option value="">Todos</option>{providers.map((provider) => <option key={provider} value={provider}>{provider}</option>)}</select></label>
         <label className="field search-wide"><span>Destinatario exacto</span><input type="email" autoComplete="off" value={filters.recipient} onChange={(event) => setFilters({ ...filters, recipient: event.target.value })} placeholder="usuario@ejemplo.com" /><small>No se coloca en la URL: el servidor lo transforma a SHA-256 para consultar el ledger.</small></label>
@@ -111,7 +114,7 @@ export function SearchWorkbench({ apps, providers, initialMessages }: Props) {
 
     <section className="panel search-results">
       <div className="panel-head"><div><span className="eyebrow">LEDGER</span><h2>{searched ? "Resultados" : "Últimos correos"}</h2></div><span className="pill neutral">{messages.length} encontrados</span></div>
-      {messages.length === 0 ? <div className="empty-state"><h2>Sin coincidencias</h2><p>No hay correos que cumplan estos filtros o la persistencia de Search & Recovery todavía no está conectada.</p></div> : <div className="search-ledger"><div className="search-row search-head"><span>Estado</span><span>Aplicación</span><span>Plantilla</span><span>Proveedor</span><span>Tracking</span><span>Fecha</span><span/></div>{messages.map((message) => <div className="search-row" key={message.id}><span><span className={`status-badge ${message.status}`}>{statusLabels[message.status] ?? message.status}</span></span><strong>{appNames.get(message.app_id) ?? message.app_id}</strong><code>{message.template_key}</code><code>{message.provider_name ?? "—"}</code><div className="tracking-cell"><code>{message.id.slice(0,8)}…</code>{message.replay_of_message_id && <small>Replay</small>}</div><time dateTime={message.created_at}>{date(message.created_at)}</time><Link className="message-link" href={`/activity/${message.id}`} aria-label="Diagnosticar correo">→</Link></div>)}</div>}
+      {messages.length === 0 ? <div className="empty-state"><h2>Sin coincidencias</h2><p>No hay correos que cumplan estos filtros o la persistencia de Search & Recovery todavía no está conectada.</p></div> : <div className="search-ledger"><div className="search-row search-head"><span>Estado</span><span>Aplicación</span><span>Plantilla</span><span>Proveedor</span><span>Tracking</span><span>Fecha</span><span/></div>{messages.map((message) => <div className="search-row" key={message.id}><span><span className={`status-badge ${message.status}`}>{statusLabels[message.status] ?? message.status}</span></span><strong>{appNames.get(message.app_id) ?? message.app_id}</strong><div className="tracking-cell"><code>{message.template_key}</code>{message.template_version && <small>v{message.template_version}</small>}</div><code>{message.provider_name ?? "—"}</code><div className="tracking-cell"><code>{message.id.slice(0,8)}…</code>{message.replay_of_message_id && <small>Replay</small>}</div><time dateTime={message.created_at}>{date(message.created_at)}</time><Link className="message-link" href={`/activity/${message.id}`} aria-label="Diagnosticar correo">→</Link></div>)}</div>}
     </section>
   </div>;
 }
