@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAdminRequest } from "@/lib/admin-auth";
+import { appendAccessAudit, authorizeAdminRequest } from "@/lib/iam";
 import { registerApplication } from "@/lib/app-registry";
 import { supabaseConfigured } from "@/lib/supabase-rest";
 
@@ -11,7 +11,8 @@ function error(message: string, status: number, code?: string) {
 }
 
 export async function POST(request: NextRequest) {
-  if (!authenticateAdminRequest(request)) return error("Unauthorized", 401, "unauthorized");
+  const principal = await authorizeAdminRequest(request, "apps.manage");
+  if (!principal) return error("Forbidden", 403, "forbidden");
   if (!supabaseConfigured()) {
     return error("Application persistence is not configured yet", 503, "persistence_not_configured");
   }
@@ -32,6 +33,14 @@ export async function POST(request: NextRequest) {
 
   try {
     const created = await registerApplication({ websiteUrl, name, accent });
+    await appendAccessAudit({
+      principal,
+      permission: "apps.manage",
+      action: "app.created",
+      appId: created.app.id,
+      requestId: request.headers.get("x-vercel-id") || request.headers.get("x-request-id"),
+      details: { websiteUrl, name: created.app.name },
+    }).catch(() => undefined);
     return NextResponse.json({
       ok: true,
       app: created.app,

@@ -5,7 +5,7 @@ import { AppOnboarding } from "@/components/app-onboarding";
 export const metadata = { title: "Agregar web" };
 
 export default function NewAppPage() {
-  return <AppShell active="Aplicaciones">
+  return <AppShell active="Aplicaciones" requiredPermission="apps.manage">
     <PageHeader eyebrow="Aplicaciones" title="Agregar una web" description="Un alta simple para conectar cualquier producto a LVL Mail sin tocar Resend ni crear dominios adicionales." action={<Link className="text-link" href="/apps">← Volver a aplicaciones</Link>} />
     <section className="onboarding-layout">
       <article className="panel onboarding-card"><AppOnboarding /></article>

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAdminRequest } from "@/lib/admin-auth";
+import { appendAccessAudit, authorizeAdminRequest } from "@/lib/iam";
 import { searchMessages } from "@/lib/message-search";
 
 export const runtime = "nodejs";
@@ -10,8 +10,9 @@ function text(value: unknown, max = 256) {
 }
 
 export async function POST(request: NextRequest) {
-  if (!authenticateAdminRequest(request)) {
-    return NextResponse.json({ ok: false, error: "Unauthorized administrator" }, { status: 401 });
+  const principal = await authorizeAdminRequest(request, "messages.search");
+  if (!principal) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
   let body: Record<string, unknown>;
@@ -26,10 +27,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Invalid recipient" }, { status: 400 });
   }
   const templateVersion = Number(body.templateVersion);
+  const appId = text(body.appId, 64);
+  if (appId && !principal.allApps && !principal.appIds.includes(appId)) {
+    return NextResponse.json({ ok: false, error: "Application scope denied" }, { status: 403 });
+  }
 
   const messages = await searchMessages({
     query: text(body.query),
-    appId: text(body.appId, 64),
+    appId,
     templateKey: text(body.templateKey, 64),
     templateVersion: Number.isInteger(templateVersion) && templateVersion > 0 ? templateVersion : null,
     status: text(body.status, 64),
@@ -39,6 +44,22 @@ export async function POST(request: NextRequest) {
     to: text(body.to, 32),
     limit: 150,
   });
+
+  await appendAccessAudit({
+    principal,
+    permission: "messages.search",
+    action: "messages.searched",
+    appId: appId || null,
+    requestId: request.headers.get("x-vercel-id") || request.headers.get("x-request-id"),
+    details: {
+      queryUsed: Boolean(text(body.query)),
+      recipientFilterUsed: Boolean(recipient),
+      templateKey: text(body.templateKey, 64) || null,
+      status: text(body.status, 64) || null,
+      providerName: text(body.providerName, 64) || null,
+      resultCount: messages.length,
+    },
+  }).catch(() => undefined);
 
   return NextResponse.json({ ok: true, messages });
 }

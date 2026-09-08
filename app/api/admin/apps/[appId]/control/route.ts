@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAdminRequest } from "@/lib/admin-auth";
+import { appendAccessAudit, authorizeAdminRequest, type Permission } from "@/lib/iam";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import {
   appendAudit,
@@ -17,16 +17,12 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function unauthorized() {
-  return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+function forbidden() {
+  return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
 }
 
 function jsonError(error: string, status = 400) {
   return NextResponse.json({ ok: false, error }, { status });
-}
-
-function actor() {
-  return process.env.LVL_MAIL_ADMIN_USER || "lvl-mail-admin";
 }
 
 async function stateFor(appId: string) {
@@ -40,15 +36,15 @@ async function stateFor(appId: string) {
 }
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ appId: string }> }) {
-  if (!authenticateAdminRequest(request)) return unauthorized();
   const { appId } = await params;
   const app = await resolveRegisteredApp(appId);
   if (!app) return jsonError("Application not found", 404);
+  const principal = await authorizeAdminRequest(request, "apps.manage", appId);
+  if (!principal) return forbidden();
   return NextResponse.json({ ok: true, app, ...(await stateFor(appId)) });
 }
 
 export async function PATCH(request: NextRequest, { params }: { params: Promise<{ appId: string }> }) {
-  if (!authenticateAdminRequest(request)) return unauthorized();
   const { appId } = await params;
   const app = await resolveRegisteredApp(appId);
   if (!app) return jsonError("Application not found", 404);
@@ -61,6 +57,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   }
 
   const action = typeof body.action === "string" ? body.action : "";
+  const permission: Permission = action === "rotate_key" || action === "revoke_key"
+    ? "keys.rotate"
+    : action === "template"
+      ? "templates.edit"
+      : "apps.manage";
+  const principal = await authorizeAdminRequest(request, permission, appId);
+  if (!principal) return forbidden();
+  const requestId = request.headers.get("x-vercel-id") || request.headers.get("x-request-id");
 
   if (action === "policy") {
     const mode = body.mode;
@@ -77,35 +81,39 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
         ? body.testRecipientDomains.filter((item): item is string => typeof item === "string")
         : undefined,
     });
-    await appendAudit({
-      appId,
-      action: "policy.updated",
-      actor: actor(),
-      details: {
-        mode: policy.mode,
-        minuteLimit: policy.minute_limit,
-        dailyLimit: policy.daily_limit,
-        p0ReservedPerMinute: policy.p0_reserved_per_minute,
-        maxConsecutiveFailures: policy.max_consecutive_failures,
-      },
-    });
+    await Promise.allSettled([
+      appendAudit({
+        appId,
+        action: "policy.updated",
+        actor: principal.email,
+        details: {
+          mode: policy.mode,
+          minuteLimit: policy.minute_limit,
+          dailyLimit: policy.daily_limit,
+          p0ReservedPerMinute: policy.p0_reserved_per_minute,
+          maxConsecutiveFailures: policy.max_consecutive_failures,
+        },
+      }),
+      appendAccessAudit({
+        principal,
+        permission,
+        action: "app.policy.updated",
+        appId,
+        requestId,
+        details: { mode: policy.mode, minuteLimit: policy.minute_limit, dailyLimit: policy.daily_limit },
+      }),
+    ]);
     return NextResponse.json({ ok: true, ...(await stateFor(appId)) });
   }
 
   if (action === "rotate_key") {
     const label = typeof body.label === "string" ? body.label : "Production";
     const created = await rotateAppKey(appId, label);
-    await appendAudit({
-      appId,
-      action: "key.created",
-      actor: actor(),
-      details: { keyPrefix: created.keyPrefix, label },
-    });
-    return NextResponse.json({
-      ok: true,
-      oneTimeApiKey: created.apiKey,
-      ...(await stateFor(appId)),
-    });
+    await Promise.allSettled([
+      appendAudit({ appId, action: "key.created", actor: principal.email, details: { keyPrefix: created.keyPrefix, label } }),
+      appendAccessAudit({ principal, permission, action: "app.key.created", appId, requestId, details: { keyPrefix: created.keyPrefix, label } }),
+    ]);
+    return NextResponse.json({ ok: true, oneTimeApiKey: created.apiKey, ...(await stateFor(appId)) });
   }
 
   if (action === "revoke_key") {
@@ -115,16 +123,12 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const target = keys.find((key) => key.id === keyId && !key.revoked_at);
     if (!target) return jsonError("Active key not found", 404);
     const activeKeys = keys.filter((key) => !key.revoked_at && (!key.expires_at || new Date(key.expires_at) > new Date()));
-    if (activeKeys.length <= 1) {
-      return jsonError("Create a replacement key before revoking the last active key", 409);
-    }
+    if (activeKeys.length <= 1) return jsonError("Create a replacement key before revoking the last active key", 409);
     await revokeAppKey(appId, keyId);
-    await appendAudit({
-      appId,
-      action: "key.revoked",
-      actor: actor(),
-      details: { keyPrefix: target.key_prefix, label: target.label },
-    });
+    await Promise.allSettled([
+      appendAudit({ appId, action: "key.revoked", actor: principal.email, details: { keyPrefix: target.key_prefix, label: target.label } }),
+      appendAccessAudit({ principal, permission, action: "app.key.revoked", appId, requestId, details: { keyPrefix: target.key_prefix, label: target.label } }),
+    ]);
     return NextResponse.json({ ok: true, ...(await stateFor(appId)) });
   }
 
@@ -146,12 +150,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       }),
       updateAppPolicy(appId, { enabled_templates: enabledTemplates }),
     ]);
-    await appendAudit({
-      appId,
-      action: "template.updated",
-      actor: actor(),
-      details: { templateKey, enabled },
-    });
+    await Promise.allSettled([
+      appendAudit({ appId, action: "template.updated", actor: principal.email, details: { templateKey, enabled } }),
+      appendAccessAudit({ principal, permission, action: "app.template.setting.updated", appId, requestId, details: { templateKey, enabled } }),
+    ]);
     return NextResponse.json({ ok: true, ...(await stateFor(appId)) });
   }
 

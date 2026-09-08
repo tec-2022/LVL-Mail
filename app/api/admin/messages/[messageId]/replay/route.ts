@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAdminRequest } from "@/lib/admin-auth";
+import { appendAccessAudit, authorizeAdminRequest } from "@/lib/iam";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import {
   beginTrackedMessage,
@@ -39,10 +39,12 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ messageId: string }> },
 ) {
-  if (!authenticateAdminRequest(request)) return error("Unauthorized administrator", 401);
   const { messageId } = await params;
   const source = await getTrackedMessage(messageId);
   if (!source) return error("Source message not found", 404);
+
+  const principal = await authorizeAdminRequest(request, "messages.replay", source.app_id);
+  if (!principal) return error("Forbidden", 403);
 
   let body: Record<string, unknown> = {};
   try {
@@ -156,14 +158,13 @@ export async function POST(
     });
   }
 
-  const actor = process.env.LVL_MAIL_ADMIN_USER || "lvl-mail-admin";
   const reason = typeof body.reason === "string" && body.reason.trim()
     ? body.reason.trim().slice(0, 500)
     : "Safe Replay from message recovery";
   const claimed = await claimReplay({
     sourceMessageId: source.id,
     replayMessageId: replay.id,
-    actor,
+    actor: principal.email,
     reason,
   }).catch(() => false);
   if (!claimed) {
@@ -177,6 +178,15 @@ export async function POST(
       trackingId: replay.id,
     });
   }
+
+  await appendAccessAudit({
+    principal,
+    permission: "messages.replay",
+    action: "message.replay.claimed",
+    appId: source.app_id,
+    requestId: request.headers.get("x-vercel-id") || request.headers.get("x-request-id"),
+    details: { sourceTrackingId: source.id, replayTrackingId: replay.id, providerSlot: requestedSlot, provider: provider.name },
+  }).catch(() => undefined);
 
   const result = await provider.send({
     from: envelope.payload.from,
