@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import "./globals.css";
 import "./onboarding.css";
+import "./tracking.css";
 
 export const metadata: Metadata = {
   title: { default: "LVL Mail", template: "%s · LVL Mail" },
