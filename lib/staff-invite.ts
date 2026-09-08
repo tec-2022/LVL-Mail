@@ -1,4 +1,4 @@
-import type { Principal, StaffRole } from "@/lib/iam";
+import type { Principal, StaffMember, StaffRole } from "@/lib/iam";
 import { createAuthAdminClient } from "@/lib/supabase/auth-server";
 
 function config() {
@@ -21,7 +21,7 @@ export async function inviteStaffMemberAtomic(input: {
   allApps?: boolean;
   appIds?: string[];
   invitedBy: Principal;
-}) {
+}): Promise<StaffMember | null> {
   const admin = createAuthAdminClient();
   const current = config();
   if (!admin || !current) throw new Error("Supabase Auth admin is not configured");
@@ -56,7 +56,7 @@ export async function inviteStaffMemberAtomic(input: {
       const detail = await response.text().catch(() => "");
       throw new Error(`Could not persist staff membership (${response.status}): ${detail.slice(0, 180)}`);
     }
-    const rows = await response.json() as Array<Record<string, unknown>>;
+    const rows = await response.json() as Array<Omit<StaffMember, "app_ids">>;
 
     if (!scope.allApps && scope.appIds.length) {
       const scopeResponse = await fetch(`${current.url}/rest/v1/mail_staff_app_scopes`, {
