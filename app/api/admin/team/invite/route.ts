@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appendAccessAudit, authorizeAdminRequest, inviteStaffMember, type StaffRole } from "@/lib/iam";
+import { appendAccessAudit, authorizeAdminRequest, type StaffRole } from "@/lib/iam";
+import { inviteStaffMemberAtomic } from "@/lib/staff-invite";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const member = await inviteStaffMember({ email, role, displayName, invitedBy: principal });
+    const member = await inviteStaffMemberAtomic({ email, role, displayName, invitedBy: principal });
     await appendAccessAudit({
       principal,
       permission: "team.manage",
