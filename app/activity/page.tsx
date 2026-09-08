@@ -1,28 +1,33 @@
+import Link from "next/link";
 import { AppShell, PageHeader } from "@/components/app-shell";
-import { appBrands } from "@/lib/mail-policy";
-import { getRecentEvents } from "@/lib/supabase-rest";
+import { listRegisteredApps } from "@/lib/app-registry";
+import { getRecentTrackedMessages } from "@/lib/mail-tracking";
 
 export const metadata = { title: "Actividad" };
 
-function eventLabel(type: string) {
-  const labels: Record<string, string> = {
-    "email.sent": "Enviado",
-    "email.delivered": "Entregado",
-    "email.delivery_delayed": "Retrasado",
-    "email.bounced": "Rebotado",
-    "email.complained": "Complaint",
-    "email.failed": "Fallido",
-    "email.suppressed": "Suprimido",
-    "email.opened": "Abierto",
-    "email.clicked": "Clic",
-  };
-  return labels[type] ?? type;
-}
+const statusLabels: Record<string, string> = {
+  processing: "Procesando",
+  blocked: "Bloqueado",
+  provider_rejected: "Rechazado",
+  accepted: "Aceptado",
+  sent: "Enviado",
+  delayed: "Retrasado",
+  delivered: "Entregado",
+  bounced: "Rebotado",
+  complained: "Complaint",
+  failed: "Fallido",
+  suppressed: "Suprimido",
+};
 
 export default async function ActivityPage() {
-  const events = await getRecentEvents(40);
-  return <AppShell active="Actividad"><PageHeader eyebrow="Observabilidad" title="Actividad de correo" description="Eventos verificados de Resend, almacenados por LVL Mail sin exponer la dirección del destinatario." />
-    {events.length === 0 ? <section className="panel empty-state"><div className="empty-icon">↗</div><h2>Aún no hay eventos persistidos</h2><p>Cuando configures Supabase y apuntes el webhook firmado de Resend a <code>/api/webhooks/resend</code>, esta vista se alimentará automáticamente.</p></section> :
-    <section className="panel"><div className="panel-head"><div><span className="eyebrow">ÚLTIMOS EVENTOS</span><h2>Flujo de entrega</h2></div><span className="pill success">Webhook verificado</span></div><div className="event-table"><div className="event-row event-head"><span>Evento</span><span>Aplicación</span><span>Plantilla</span><span>Fecha</span></div>{events.map((event) => { const appId = event.mail_messages?.app_id; const brand = appId ? appBrands[appId] : null; return <div className="event-row" key={event.provider_event_id}><span><strong>{eventLabel(event.event_type)}</strong><small>{event.event_type}</small></span><span>{brand?.name ?? appId ?? "—"}</span><code>{event.mail_messages?.template_key ?? "—"}</code><time dateTime={event.occurred_at}>{new Intl.DateTimeFormat("es-MX", { dateStyle:"medium", timeStyle:"short", timeZone:"America/Tijuana" }).format(new Date(event.occurred_at))}</time></div>})}</div></section>}
+  const [messages, apps] = await Promise.all([
+    getRecentTrackedMessages(100),
+    listRegisteredApps(),
+  ]);
+  const appNames = new Map(apps.map((app) => [app.id, app.name]));
+
+  return <AppShell active="Actividad"><PageHeader eyebrow="Trazabilidad" title="Todos los correos" description="Cada intento válido queda ligado a una web antes de llegar a Resend, incluso si termina bloqueado, rechazado, rebotado o fallido." />
+    {messages.length === 0 ? <section className="panel empty-state"><div className="empty-icon">↗</div><h2>Aún no hay correos trackeados</h2><p>Cuando conectemos la persistencia, todo envío válido aparecerá aquí desde su primer estado, no solo después de ser aceptado por el proveedor.</p></section> :
+    <section className="panel"><div className="panel-head"><div><span className="eyebrow">LEDGER</span><h2>Últimos correos</h2></div><span className="pill success">Tracking obligatorio</span></div><div className="message-ledger"><div className="message-row message-head"><span>Estado</span><span>Aplicación</span><span>Plantilla</span><span>Prioridad</span><span>Solicitado</span><span/></div>{messages.map((message) => <div className="message-row" key={message.id}><span><span className={`status-badge ${message.status}`}>{statusLabels[message.status] ?? message.status}</span></span><span>{appNames.get(message.app_id) ?? message.app_id}</span><code>{message.template_key}</code><strong>{message.priority}</strong><time dateTime={message.created_at}>{new Intl.DateTimeFormat("es-MX", { dateStyle:"medium", timeStyle:"short", timeZone:"America/Tijuana" }).format(new Date(message.created_at))}</time><Link className="message-link" href={`/activity/${message.id}`} aria-label="Ver trazabilidad">→</Link></div>)}</div></section>}
   </AppShell>;
 }

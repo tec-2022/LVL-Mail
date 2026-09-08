@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 import {
@@ -12,9 +13,12 @@ import {
 } from "@/lib/app-registry";
 import {
   isRecipientSuppressed,
-  recordAcceptedMessage,
-  supabaseConfigured,
 } from "@/lib/supabase-rest";
+import {
+  beginTrackedMessage,
+  setTrackedMessageResult,
+  trackingConfigured,
+} from "@/lib/mail-tracking";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -58,25 +62,8 @@ export async function POST(request: NextRequest) {
   }
   if (!template || !allowedTemplates.has(template)) return jsonError("Unsupported template", 400);
   if (!validEmail(to)) return jsonError("Invalid recipient", 400);
-  if (idempotencyKey.length < 8 || idempotencyKey.length > 256) return jsonError("A valid idempotencyKey is required", 400);
-
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!resendKey) return jsonError("Mail provider is not configured", 503);
-
-  const priority = priorityForTemplate(template);
-  const policy = deliveryPolicy(priority);
-  let observability: "ready" | "degraded" | "not-configured" = supabaseConfigured() ? "ready" : "not-configured";
-
-  if (supabaseConfigured()) {
-    try {
-      if (await isRecipientSuppressed(to)) {
-        return jsonError("Recipient is suppressed", 422, { code: "recipient_suppressed" });
-      }
-    } catch {
-      // Provider-side suppressions still protect deliverability. Do not block
-      // authentication mail solely because observability storage is degraded.
-      observability = "degraded";
-    }
+  if (idempotencyKey.length < 8 || idempotencyKey.length > 256) {
+    return jsonError("A valid idempotencyKey is required", 400);
   }
 
   let rendered;
@@ -84,6 +71,65 @@ export async function POST(request: NextRequest) {
     rendered = renderTemplate(brand, template, variables);
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
+  }
+
+  const resendKey = process.env.RESEND_API_KEY;
+  if (!resendKey) return jsonError("Mail provider is not configured", 503);
+  if (!trackingConfigured()) {
+    return jsonError("Mandatory mail tracking is not configured", 503, { code: "tracking_required" });
+  }
+
+  const priority = priorityForTemplate(template);
+  const policy = deliveryPolicy(priority);
+  const requestedTrackingId = randomUUID();
+
+  let tracked;
+  try {
+    tracked = await beginTrackedMessage({
+      trackingId: requestedTrackingId,
+      appId,
+      templateKey: template,
+      priority,
+      recipient: to,
+      idempotencyKey,
+    });
+  } catch {
+    // Traceability is a hard requirement: never send a message that cannot be
+    // assigned to an application and tracking record first.
+    return jsonError("Could not create mandatory tracking record", 503, { code: "tracking_unavailable" });
+  }
+
+  // The database returns the existing row on an idempotency collision. Never
+  // call the provider again for the same application/idempotency key.
+  if (tracked.id !== requestedTrackingId) {
+    return NextResponse.json({
+      ok: Boolean(tracked.provider_id),
+      id: tracked.provider_id,
+      trackingId: tracked.id,
+      appId,
+      template,
+      priority,
+      status: tracked.status,
+      idempotentReplay: true,
+    }, { status: tracked.provider_id ? 202 : 409 });
+  }
+
+  try {
+    if (await isRecipientSuppressed(to)) {
+      await setTrackedMessageResult({
+        trackingId: tracked.id,
+        status: "blocked",
+        failureCode: "recipient_suppressed",
+      });
+      return jsonError("Recipient is suppressed", 422, {
+        code: "recipient_suppressed",
+        trackingId: tracked.id,
+        appId,
+      });
+    }
+  } catch {
+    // A suppression lookup failure must not erase traceability. Resend's own
+    // suppression controls remain authoritative at delivery time.
   }
 
   const domain = process.env.LVL_MAIL_SENDING_DOMAIN ?? "mail.lvltechmx.com";
@@ -98,10 +144,12 @@ export async function POST(request: NextRequest) {
       text: rendered.text,
       headers: {
         "X-LVL-Mail-App": appId,
+        "X-LVL-Mail-Tracking": tracked.id,
         "X-LVL-Mail-Priority": priority,
       },
       tags: [
         { name: "app", value: appId },
+        { name: "tracking_id", value: tracked.id },
         { name: "template", value: template },
         { name: "priority", value: priority.toLowerCase() },
       ],
@@ -112,32 +160,45 @@ export async function POST(request: NextRequest) {
   if (error || !data?.id) {
     const providerCode = error && typeof error === "object" && "name" in error
       ? String(error.name)
-      : null;
-    return jsonError("Provider rejected email", 502, { providerCode });
-  }
-
-  if (supabaseConfigured()) {
+      : "provider_rejected";
     try {
-      await recordAcceptedMessage({
-        providerId: data.id,
-        appId,
-        templateKey: template,
-        priority,
-        recipient: to,
-        idempotencyKey,
+      await setTrackedMessageResult({
+        trackingId: tracked.id,
+        status: "provider_rejected",
+        failureCode: providerCode,
       });
     } catch {
-      observability = "degraded";
+      // The initial tracking record already exists and preserves the attempt.
     }
+    return jsonError("Provider rejected email", 502, {
+      providerCode,
+      trackingId: tracked.id,
+      appId,
+    });
+  }
+
+  let trackingState: "ready" | "event-reconciliation" = "ready";
+  try {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      providerId: data.id,
+      status: "accepted",
+    });
+  } catch {
+    // Resend received the tracking_id tag, so its signed webhook can reconcile
+    // this row even if this post-send update experiences a transient failure.
+    trackingState = "event-reconciliation";
   }
 
   return NextResponse.json({
     ok: true,
     id: data.id,
+    trackingId: tracked.id,
     appId,
     template,
     priority,
+    status: "accepted",
     delivery: policy,
-    observability,
+    tracking: trackingState,
   }, { status: 202 });
 }
