@@ -1,0 +1,13 @@
+import { AppShell, PageHeader } from "@/components/app-shell";
+
+export const metadata = { title: "Configuración" };
+export default function SettingsPage() {
+  return <AppShell active="Configuración"><PageHeader eyebrow="Infrastructure" title="Configuración" description="Lo que LVL Mail necesita para pasar de código listo a infraestructura de correo en producción." />
+    <section className="settings-grid"><article className="panel"><span className="eyebrow">DOMINIO</span><h2>mail.lvltechmx.com</h2><p>Verifica este subdominio en Resend y publica exactamente los registros SPF/DKIM que entregue el proveedor. El sitio y las demás webs pueden vivir en dominios distintos.</p><div className="setting-status"><span className="status-dot amber"/>Requiere verificación DNS externa</div></article>
+    <article className="panel"><span className="eyebrow">SECRETS</span><h2>Variables del servidor</h2><div className="code-stack"><code>RESEND_API_KEY</code><code>RESEND_WEBHOOK_SECRET</code><code>LVL_MAIL_APP_KEYS</code><code>LVL_MAIL_SENDING_DOMAIN</code><code>SUPABASE_URL</code><code>SUPABASE_SERVICE_ROLE_KEY</code><code>LVL_MAIL_ADMIN_USER</code><code>LVL_MAIL_ADMIN_PASSWORD</code></div><p>Son secretos de servidor. Ninguno debe usar el prefijo <code>NEXT_PUBLIC_</code>.</p></article>
+    <article className="panel"><span className="eyebrow">WEBHOOK</span><h2>/api/webhooks/resend</h2><p>La ruta ya existe. Verifica la firma Svix usando el cuerpo crudo, deduplica por <code>svix-id</code> y persiste eventos de entrega, bounce, complaint y supresión en Supabase.</p><div className="setting-status success-note"><span className="status-dot"/>Implementado en código</div></article>
+    <article className="panel"><span className="eyebrow">SEGURIDAD</span><h2>Consola administrativa</h2><p>El panel usa autenticación administrativa en producción y falla cerrado si faltan las credenciales. La API pública de envío queda fuera de esa barrera y exige su propia clave independiente por aplicación.</p><div className="setting-status success-note"><span className="status-dot"/>Protección fail-closed</div></article>
+    <article className="panel"><span className="eyebrow">PERSISTENCIA</span><h2>Supabase</h2><p><code>supabase/schema.sql</code> crea aplicaciones, mensajes, eventos, supresiones y métricas. RLS queda activo sin políticas públicas y los RPC de métricas solo se conceden al <code>service_role</code>.</p></article>
+    <article className="panel"><span className="eyebrow">ENVÍO</span><h2>/api/v1/send</h2><p>Las aplicaciones mandan <code>appId</code>, <code>template</code>, destinatario, variables e idempotencia. LVL Mail decide branding, prioridad y HTML antes de entregar a Resend.</p></article></section>
+  </AppShell>;
+}
