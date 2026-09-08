@@ -1,5 +1,6 @@
 -- Mandatory per-application email tracking for LVL Mail.
--- Every valid authenticated send intent gets a mail_messages row before Resend is called.
+-- Every valid authenticated send intent gets a mail_messages row before the provider is called.
+-- Functions are SECURITY INVOKER and service_role-only; no elevated definer path is needed.
 
 alter table public.mail_messages add column if not exists failure_code text;
 alter table public.mail_messages add column if not exists accepted_at timestamptz;
@@ -24,8 +25,8 @@ create or replace function public.mail_begin_tracked_message(
 )
 returns setof public.mail_messages
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 begin
   if p_priority not in ('P0','P1','P2','P3') then
@@ -61,8 +62,8 @@ create or replace function public.mail_set_message_result(
 )
 returns setof public.mail_messages
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 begin
   if p_status not in (
@@ -102,8 +103,8 @@ create or replace function public.mail_record_tracked_event(
 )
 returns table(message_id uuid, app_id text)
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 declare
   v_message public.mail_messages%rowtype;
@@ -189,8 +190,8 @@ returns table(
 )
 language sql
 stable
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
   select
     p_app_id,
@@ -211,29 +212,9 @@ as $$
   where m.app_id = p_app_id;
 $$;
 
--- Keep the existing global dashboard semantically correct now that blocked/rejected
--- attempts are also persisted.
-create or replace function public.mail_dashboard_metrics()
-returns table (
-  accepted bigint,
-  delivered bigint,
-  bounced bigint,
-  complained bigint,
-  suppressed bigint
-)
-language sql
-stable
-security definer
-set search_path = public
-as $$
-  select
-    count(*) filter (where m.created_at >= now() - interval '24 hours' and m.provider_id is not null)::bigint,
-    count(*) filter (where m.created_at >= now() - interval '24 hours' and m.status = 'delivered')::bigint,
-    count(*) filter (where m.created_at >= now() - interval '24 hours' and m.status = 'bounced')::bigint,
-    count(*) filter (where m.created_at >= now() - interval '24 hours' and m.status = 'complained')::bigint,
-    count(*) filter (where m.created_at >= now() - interval '24 hours' and m.status = 'suppressed')::bigint
-  from public.mail_messages m;
-$$;
+-- The old no-argument dashboard function must not be recreated here. The
+-- foundation schema owns the app-scoped `mail_dashboard_metrics(text[])` RPC.
+drop function if exists public.mail_dashboard_metrics();
 
 revoke all on function public.mail_begin_tracked_message(uuid,text,text,text,text,text) from public, anon, authenticated;
 revoke all on function public.mail_set_message_result(uuid,text,text,text) from public, anon, authenticated;

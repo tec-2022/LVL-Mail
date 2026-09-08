@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 type Decision = {
   allowed: boolean;
@@ -26,6 +27,7 @@ export function RecoveryActions({
   secondaryReady,
   manualFailover,
 }: Props) {
+  const router = useRouter();
   const [reason, setReason] = useState("Recuperación manual después de revisar el diagnóstico");
   const [busy, setBusy] = useState<"primary" | "secondary" | null>(null);
   const [error, setError] = useState("");
@@ -42,7 +44,8 @@ export function RecoveryActions({
       });
       const payload = await response.json() as { error?: string; trackingId?: string };
       if (!response.ok || !payload.trackingId) throw new Error(payload.error || "No se pudo crear el Safe Replay");
-      window.location.assign(`/activity/${payload.trackingId}`);
+      router.push(`/activity/${payload.trackingId}`);
+      router.refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "No se pudo crear el Safe Replay");
       setBusy(null);

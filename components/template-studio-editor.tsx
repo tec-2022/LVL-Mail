@@ -47,7 +47,6 @@ export function TemplateStudioEditor({
   const [notice, setNotice] = useState("");
 
   const draft = useMemo(() => versions.find((version) => version.status === "draft") ?? null, [versions]);
-  const published = useMemo(() => versions.find((version) => version.status === "published") ?? null, [versions]);
 
   async function api(action: string, extra: Record<string, unknown> = {}) {
     const response = await fetch(`/api/admin/apps/${encodeURIComponent(appId)}/templates/${encodeURIComponent(templateKey)}`, {
