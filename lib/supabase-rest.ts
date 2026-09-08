@@ -176,8 +176,8 @@ export type AppHealth = {
   delivered: number;
   bounced: number;
   complained: number;
-  bounce_rate: number;
-  complaint_rate: number;
+  bounce_rate: number | null;
+  complaint_rate: number | null;
 };
 
 export async function getAppHealth(): Promise<AppHealth[]> {
