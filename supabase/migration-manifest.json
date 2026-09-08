@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "description": "Review order for bootstrapping a clean LVL Mail database before generating the production baseline migration.",
+  "files": [
+    "supabase/schema.sql",
+    "supabase/migrations/202609080730_per_app_tracking.sql",
+    "supabase/enterprise.sql",
+    "supabase/reputation-guard.sql",
+    "supabase/template-studio.sql",
+    "supabase/template-attribution.sql",
+    "supabase/operations-reliability.sql",
+    "supabase/search-recovery.sql",
+    "supabase/iam.sql",
+    "supabase/alerting.sql",
+    "supabase/alerting-cooldown.sql",
+    "supabase/retention.sql"
+  ]
+}
