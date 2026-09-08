@@ -6,6 +6,7 @@ import {
 } from "@/lib/supabase-rest";
 import { recordTrackedEvent } from "@/lib/mail-tracking";
 import { evaluateReputation } from "@/lib/reputation-guard";
+import { attachProvider, evaluateReliability } from "@/lib/operations";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -115,6 +116,10 @@ export async function POST(request: NextRequest) {
       if (!linked) {
         return NextResponse.json({ ok: false, error: "Email event has no tracking owner" }, { status: 503 });
       }
+
+      // Provider attribution is operational metadata, never trusted from the
+      // calling application. This webhook route is Resend-specific.
+      await attachProvider(linked.message_id, "resend").catch(() => undefined);
     }
 
     const recipient = recipientFrom(event);
@@ -135,13 +140,14 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Re-evaluate only on events that change the reputation window or can help
-    // it recover. This stays per-app so one product never penalizes another.
     if (
       linked?.app_id &&
       ["email.delivered", "email.bounced", "email.complained", "email.suppressed"].includes(event.type)
     ) {
-      await evaluateReputation(linked.app_id);
+      await Promise.allSettled([
+        evaluateReputation(linked.app_id),
+        evaluateReliability(linked.app_id),
+      ]);
     }
   } catch {
     return NextResponse.json({ ok: false, error: "Webhook persistence failed" }, { status: 500 });

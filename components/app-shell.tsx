@@ -8,11 +8,13 @@ const nav = [
   ["/templates", "Plantillas", "template"],
   ["/activity", "Actividad", "activity"],
   ["/reputation", "Reputación", "shield"],
+  ["/operations", "Operaciones", "activity"],
   ["/settings", "Configuración", "settings"],
 ] as const;
 
 export function AppShell({ active, children }: { active: string; children: ReactNode }) {
   const providerReady = Boolean(process.env.RESEND_API_KEY);
+  const providerName = (process.env.LVL_MAIL_PROVIDER ?? "resend").toLowerCase();
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -35,7 +37,7 @@ export function AppShell({ active, children }: { active: string; children: React
       <main className="main">
         <header className="topbar">
           <div><span className="eyebrow">LVL TECH / EMAIL INFRASTRUCTURE</span></div>
-          <div className="topbar-actions"><span className={providerReady ? "pill success" : "pill neutral"}>{providerReady ? "Resend conectado" : "Resend pendiente"}</span><div className="avatar">LT</div></div>
+          <div className="topbar-actions"><span className={providerReady ? "pill success" : "pill neutral"}>{providerReady ? `${providerName} conectado` : `${providerName} pendiente`}</span><div className="avatar">LT</div></div>
         </header>
         <div className="content">{children}</div>
       </main>

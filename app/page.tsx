@@ -3,16 +3,23 @@ import { AppShell, PageHeader, PriorityBadge } from "@/components/app-shell";
 import { Icon } from "@/components/icons";
 import { listRegisteredApps } from "@/lib/app-registry";
 import { getDashboardMetrics } from "@/lib/supabase-rest";
+import { listIncidents } from "@/lib/operations";
 
 function percent(value: number | null) {
   return value === null ? "—" : `${value.toFixed(1)}%`;
 }
 
 export default async function Home() {
-  const [metrics, apps] = await Promise.all([getDashboardMetrics(), listRegisteredApps()]);
+  const [metrics, apps, incidents] = await Promise.all([
+    getDashboardMetrics(),
+    listRegisteredApps(),
+    listIncidents(30),
+  ]);
   const deliveryRate = metrics && metrics.accepted > 0
     ? (metrics.delivered / metrics.accepted) * 100
     : null;
+  const activeIncidents = incidents.filter((incident) => incident.status !== "resolved");
+  const criticalIncidents = activeIncidents.filter((incident) => incident.severity === "critical");
 
   return (
     <AppShell active="Resumen">
@@ -23,6 +30,8 @@ export default async function Home() {
         <article className="metric-card"><span>Entregabilidad · 24 h</span><strong>{percent(deliveryRate)}</strong><small>{metrics ? `${metrics.delivered} entregados · ${metrics.suppressed} suprimidos` : "Sin datos inventados"}</small></article>
         <article className="metric-card"><span>Dominio de envío</span><strong className="metric-domain">mail.lvltechmx.com</strong><small>{apps.length} identidades registradas</small></article>
       </section>
+
+      {activeIncidents.length > 0 ? <section className={criticalIncidents.length ? "control-alert error" : "platform-notice"}><strong>{criticalIncidents.length ? `${criticalIncidents.length} incidente${criticalIncidents.length === 1 ? " crítico" : "s críticos"}` : `${activeIncidents.length} señal${activeIncidents.length === 1 ? " requiere" : "es requieren"} atención`}</strong><span>Operations & Reliability detectó degradación activa. <Link className="text-link" href="/operations">Abrir centro de incidentes →</Link></span></section> : <section className="platform-notice"><strong>Operations & Reliability</strong><span>Sin incidentes activos. SLOs P0, proveedor y reputación quedan preparados para evaluación continua.</span></section>}
 
       <section className="two-col">
         <article className="panel">
