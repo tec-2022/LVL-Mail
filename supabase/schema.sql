@@ -16,7 +16,6 @@ create table if not exists public.mail_apps (
   updated_at timestamptz not null default now()
 );
 
--- Safe for an earlier foundation schema that may already exist.
 alter table public.mail_apps add column if not exists website_url text;
 alter table public.mail_apps add column if not exists tagline text;
 alter table public.mail_apps add column if not exists accent text not null default '#111827';
@@ -89,7 +88,26 @@ create index if not exists mail_events_message_idx on public.mail_events(message
 create index if not exists mail_events_provider_email_idx on public.mail_events(provider_email_id, occurred_at desc);
 create index if not exists mail_events_type_time_idx on public.mail_events(event_type, occurred_at desc);
 
--- Atomic onboarding: one RPC creates the app and its first API key together.
+alter table public.mail_apps enable row level security;
+alter table public.mail_app_keys enable row level security;
+alter table public.mail_messages enable row level security;
+alter table public.mail_events enable row level security;
+alter table public.mail_suppressions enable row level security;
+
+revoke all on table public.mail_apps from anon, authenticated;
+revoke all on table public.mail_app_keys from anon, authenticated;
+revoke all on table public.mail_messages from anon, authenticated;
+revoke all on table public.mail_events from anon, authenticated;
+revoke all on table public.mail_suppressions from anon, authenticated;
+
+grant select, insert, update on public.mail_apps to service_role;
+grant select, insert, update on public.mail_app_keys to service_role;
+grant select, insert, update on public.mail_messages to service_role;
+grant select, insert, update on public.mail_events to service_role;
+grant select, insert, update on public.mail_suppressions to service_role;
+
+-- Atomic onboarding. SECURITY INVOKER is sufficient because this RPC is only
+-- executable by service_role, which has explicit table grants above.
 create or replace function public.mail_create_app(
   p_id text,
   p_name text,
@@ -103,8 +121,8 @@ create or replace function public.mail_create_app(
 )
 returns setof public.mail_apps
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 begin
   if p_id !~ '^[a-z0-9][a-z0-9-]{0,47}$' then
@@ -132,12 +150,13 @@ begin
   insert into public.mail_app_keys (app_id, key_prefix, secret_hash)
   values (p_id, p_key_prefix, p_secret_hash);
 
-  return query
-    select * from public.mail_apps where id = p_id;
+  return query select * from public.mail_apps where id = p_id;
 end;
 $$;
 
-create or replace function public.mail_dashboard_metrics()
+-- NULL allow-list means global. A non-empty array scopes every metric to those apps.
+drop function if exists public.mail_dashboard_metrics();
+create or replace function public.mail_dashboard_metrics(p_app_ids text[])
 returns table (
   accepted bigint,
   delivered bigint,
@@ -147,20 +166,32 @@ returns table (
 )
 language sql
 stable
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
+  with visible_messages as (
+    select m.id
+    from public.mail_messages m
+    where m.created_at >= now() - interval '24 hours'
+      and (p_app_ids is null or m.app_id = any(p_app_ids))
+  ), visible_events as (
+    select e.event_type
+    from public.mail_events e
+    join public.mail_messages m on m.id = e.message_id
+    where e.occurred_at >= now() - interval '24 hours'
+      and (p_app_ids is null or m.app_id = any(p_app_ids))
+  )
   select
-    (select count(*) from public.mail_messages m where m.created_at >= now() - interval '24 hours') as accepted,
-    count(*) filter (where e.event_type = 'email.delivered') as delivered,
-    count(*) filter (where e.event_type = 'email.bounced') as bounced,
-    count(*) filter (where e.event_type = 'email.complained') as complained,
-    count(*) filter (where e.event_type in ('email.suppressed', 'suppression.added')) as suppressed
-  from public.mail_events e
-  where e.occurred_at >= now() - interval '24 hours';
+    (select count(*) from visible_messages)::bigint as accepted,
+    count(*) filter (where event_type = 'email.delivered')::bigint as delivered,
+    count(*) filter (where event_type = 'email.bounced')::bigint as bounced,
+    count(*) filter (where event_type = 'email.complained')::bigint as complained,
+    count(*) filter (where event_type in ('email.suppressed', 'suppression.added'))::bigint as suppressed
+  from visible_events;
 $$;
 
-create or replace function public.mail_app_health()
+drop function if exists public.mail_app_health();
+create or replace function public.mail_app_health(p_app_ids text[])
 returns table (
   app_id text,
   accepted bigint,
@@ -172,12 +203,17 @@ returns table (
 )
 language sql
 stable
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
-  with message_totals as (
+  with visible_apps as (
+    select a.id
+    from public.mail_apps a
+    where p_app_ids is null or a.id = any(p_app_ids)
+  ), message_totals as (
     select m.app_id, count(*)::bigint as accepted
     from public.mail_messages m
+    join visible_apps a on a.id = m.app_id
     where m.created_at >= now() - interval '30 days'
     group by m.app_id
   ), event_totals as (
@@ -187,7 +223,8 @@ as $$
       count(distinct e.provider_email_id) filter (where e.event_type = 'email.bounced')::bigint as bounced,
       count(distinct e.provider_email_id) filter (where e.event_type = 'email.complained')::bigint as complained
     from public.mail_events e
-    join public.mail_messages m on m.provider_id = e.provider_email_id
+    join public.mail_messages m on m.id = e.message_id
+    join visible_apps a on a.id = m.app_id
     where e.occurred_at >= now() - interval '30 days'
     group by m.app_id
   )
@@ -199,28 +236,17 @@ as $$
     coalesce(et.complained, 0)::bigint as complained,
     round((100.0 * coalesce(et.bounced, 0) / nullif(coalesce(mt.accepted, 0), 0))::numeric, 3) as bounce_rate,
     round((100.0 * coalesce(et.complained, 0) / nullif(coalesce(mt.accepted, 0), 0))::numeric, 3) as complaint_rate
-  from public.mail_apps a
+  from visible_apps a
   left join message_totals mt on mt.app_id = a.id
   left join event_totals et on et.app_id = a.id
   order by a.id;
 $$;
 
-alter table public.mail_apps enable row level security;
-alter table public.mail_app_keys enable row level security;
-alter table public.mail_messages enable row level security;
-alter table public.mail_events enable row level security;
-alter table public.mail_suppressions enable row level security;
-
-revoke all on table public.mail_apps from anon, authenticated;
-revoke all on table public.mail_app_keys from anon, authenticated;
-revoke all on table public.mail_messages from anon, authenticated;
-revoke all on table public.mail_events from anon, authenticated;
-revoke all on table public.mail_suppressions from anon, authenticated;
 revoke all on function public.mail_create_app(text,text,text,text,text,text,text,text,text) from public, anon, authenticated;
-revoke all on function public.mail_dashboard_metrics() from public, anon, authenticated;
-revoke all on function public.mail_app_health() from public, anon, authenticated;
+revoke all on function public.mail_dashboard_metrics(text[]) from public, anon, authenticated;
+revoke all on function public.mail_app_health(text[]) from public, anon, authenticated;
 grant execute on function public.mail_create_app(text,text,text,text,text,text,text,text,text) to service_role;
-grant execute on function public.mail_dashboard_metrics() to service_role;
-grant execute on function public.mail_app_health() to service_role;
+grant execute on function public.mail_dashboard_metrics(text[]) to service_role;
+grant execute on function public.mail_app_health(text[]) to service_role;
 
--- No public policies by design. All persistence access is server-side through the service role.
+-- No public policies by design. All persistence access is server-side through service_role.
