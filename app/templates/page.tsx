@@ -1,17 +1,16 @@
+import Link from "next/link";
 import { AppShell, PageHeader, PriorityBadge } from "@/components/app-shell";
+import { listRegisteredApps } from "@/lib/app-registry";
+import { templateDefinitions } from "@/lib/template-studio";
 
-export const metadata = { title: "Plantillas" };
-const templates = [
-  ["verify-email", "Confirmar correo", "Activa la cuenta mediante un CTA seguro.", "P0"],
-  ["password-reset", "Recuperar contraseña", "Flujo de seguridad con enlace de expiración corta.", "P0"],
-  ["otp", "Código OTP", "Código de acceso destacado y sin enlaces innecesarios.", "P0"],
-  ["transactional-notice", "Aviso transaccional", "Pedidos, reservas, facturas e invitaciones.", "P1"],
-  ["notification", "Notificación", "Reportes, avisos y actualizaciones no bloqueantes.", "P2"],
-] as const;
+export const metadata = { title: "Template Studio" };
 
-export default function TemplatesPage() {
-  return <AppShell active="Plantillas"><PageHeader eyebrow="Design system" title="Plantillas centralizadas" description="Toda web nueva hereda estas plantillas automáticamente. Solo envía datos; LVL Mail controla estructura, accesibilidad, marca y prioridad." />
-    <section className="platform-notice"><strong>Sin configuración por web</strong><span>Al agregar una aplicación, confirmación, recuperación, OTP, transaccional y notificación quedan disponibles inmediatamente.</span></section>
-    <section className="template-grid">{templates.map(([key,name,desc,p]) => <article className="template-card" key={key}><div className="template-preview"><div className="mini-logo"/><div className="mini-line wide"/><div className="mini-line"/><div className="mini-button"/></div><div className="template-info"><div className="template-title"><h2>{name}</h2><PriorityBadge priority={p}/></div><code>{key}</code><p>{desc}</p><div className="template-meta"><span>Responsive</span><span>Texto plano</span><span>Branding por app</span><span>Auto-heredada</span></div></div></article>)}</section>
+export default async function TemplatesPage() {
+  const apps = await listRegisteredApps();
+  const templates = Object.values(templateDefinitions);
+  return <AppShell active="Plantillas"><PageHeader eyebrow="Template Studio" title="Plantillas de correo" description="Un design system seguro con copy versionado por aplicación, preview, test-send y rollback sin redeployar las webs." />
+    <section className="quick-onboarding-banner"><div><span className="eyebrow">POR APLICACIÓN</span><h2>Cada web conserva su propia identidad y versiones.</h2><p>El HTML, las prioridades y la estructura crítica siguen gobernados por LVL Mail.</p></div></section>
+    <section className="cards-grid">{apps.map((app) => <article className="app-card" key={app.id}><div className="app-card-top"><div className="app-logo large" style={{background:app.surface,color:app.accent}}>{app.name.slice(0,2).toUpperCase()}</div><span className={app.isEnabled ? "pill success" : "pill neutral"}>{app.isEnabled ? "Activa" : "Pausada"}</span></div><h2>{app.name}</h2><p>{app.tagline}</p><dl><div><dt>Remitente</dt><dd>{app.senderLocalPart}@mail.lvltechmx.com</dd></div><div><dt>Studio</dt><dd>Draft · Publish · Rollback</dd></div></dl><div style={{marginTop:"16px"}}><Link className="button" href={`/apps/${app.id}/templates`}>Abrir Template Studio →</Link></div></article>)}</section>
+    <section className="panel" style={{marginTop:"18px"}}><div className="panel-head"><div><span className="eyebrow">CATÁLOGO BASE</span><h2>Estructura protegida</h2></div><span className="pill neutral">5 plantillas</span></div><div className="template-grid">{templates.map((template) => <article className="template-card" key={template.key}><div className="template-preview"><div className="mini-logo"/><div className="mini-line wide"/><div className="mini-line"/><div className="mini-button"/></div><div className="template-info"><div className="template-title"><h2>{template.name}</h2><PriorityBadge priority={template.priority}/></div><code>{template.key}</code><p>{template.description}</p><div className="template-meta">{template.protectedStructure.map((item) => <span key={item}>{item}</span>)}</div></div></article>)}</div></section>
   </AppShell>;
 }
