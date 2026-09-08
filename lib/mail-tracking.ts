@@ -18,6 +18,8 @@ export type TrackedMessage = {
   provider_id: string | null;
   app_id: string;
   template_key: string;
+  template_source: "base" | "published" | "studio_test";
+  template_version: number | null;
   priority: string;
   recipient_hash: string;
   idempotency_key: string;
@@ -153,7 +155,7 @@ export async function recordTrackedEvent(input: {
   return rows[0] ?? null;
 }
 
-const messageSelect = "id,provider_id,app_id,template_key,priority,recipient_hash,idempotency_key,status,failure_code,created_at,accepted_at,delivered_at,last_event_at,updated_at";
+const messageSelect = "id,provider_id,app_id,template_key,template_source,template_version,priority,recipient_hash,idempotency_key,status,failure_code,created_at,accepted_at,delivered_at,last_event_at,updated_at";
 
 export async function getRecentTrackedMessages(limit = 80): Promise<TrackedMessage[]> {
   if (!trackingConfigured()) return [];
