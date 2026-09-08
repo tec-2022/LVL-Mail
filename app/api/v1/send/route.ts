@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { Resend } from "resend";
 import {
   deliveryPolicy,
   priorityForTemplate,
@@ -11,14 +10,19 @@ import {
   authenticateRegisteredApp,
   resolveRegisteredApp,
 } from "@/lib/app-registry";
-import {
-  isRecipientSuppressed,
-} from "@/lib/supabase-rest";
+import { isRecipientSuppressed } from "@/lib/supabase-rest";
 import {
   beginTrackedMessage,
   setTrackedMessageResult,
   trackingConfigured,
 } from "@/lib/mail-tracking";
+import {
+  getAppPolicy,
+  recordProviderOutcome,
+  reserveSendBudget,
+} from "@/lib/control-plane";
+import { reputationAllows } from "@/lib/reputation-guard";
+import { getMailProvider } from "@/lib/mail-provider";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +41,13 @@ function validEmail(value: unknown): value is string {
 
 function jsonError(message: string, status: number, extra: Record<string, unknown> = {}) {
   return NextResponse.json({ ok: false, error: message, ...extra }, { status });
+}
+
+function statusForPolicyReason(reason: string | null) {
+  if (reason === "minute_limit" || reason === "daily_limit" || reason === "p0_capacity_reserved") return 429;
+  if (reason === "test_recipient_not_allowed") return 403;
+  if (reason === "app_paused") return 423;
+  return 503;
 }
 
 export async function POST(request: NextRequest) {
@@ -73,8 +84,8 @@ export async function POST(request: NextRequest) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
   }
 
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!resendKey) return jsonError("Mail provider is not configured", 503);
+  const provider = getMailProvider();
+  if (!provider) return jsonError("Mail provider is not configured", 503, { code: "provider_unavailable" });
   if (!trackingConfigured()) {
     return jsonError("Mandatory mail tracking is not configured", 503, { code: "tracking_required" });
   }
@@ -94,13 +105,9 @@ export async function POST(request: NextRequest) {
       idempotencyKey,
     });
   } catch {
-    // Traceability is a hard requirement: never send a message that cannot be
-    // assigned to an application and tracking record first.
     return jsonError("Could not create mandatory tracking record", 503, { code: "tracking_unavailable" });
   }
 
-  // The database returns the existing row on an idempotency collision. Never
-  // call the provider again for the same application/idempotency key.
   if (tracked.id !== requestedTrackingId) {
     return NextResponse.json({
       ok: Boolean(tracked.provider_id),
@@ -112,6 +119,63 @@ export async function POST(request: NextRequest) {
       status: tracked.status,
       idempotentReplay: true,
     }, { status: tracked.provider_id ? 202 : 409 });
+  }
+
+  const appPolicy = await getAppPolicy(appId);
+  if (!appPolicy.enabled_templates.includes(template)) {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      status: "blocked",
+      failureCode: "template_disabled",
+    }).catch(() => undefined);
+    return jsonError("Template is disabled for this application", 403, {
+      code: "template_disabled",
+      trackingId: tracked.id,
+      appId,
+    });
+  }
+
+  const reputation = await reputationAllows(appId, priority);
+  if (!reputation.allowed) {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      status: "blocked",
+      failureCode: "reputation_restricted",
+    }).catch(() => undefined);
+    return jsonError("Application reputation guard blocked non-critical email", 429, {
+      code: "reputation_restricted",
+      trackingId: tracked.id,
+      appId,
+      reputation: reputation.state,
+    });
+  }
+
+  const recipientDomain = to.split("@")[1]?.toLowerCase() ?? "";
+  const budget = await reserveSendBudget({
+    appId,
+    priority,
+    trackingId: tracked.id,
+    recipientDomain,
+  });
+  if (!budget.allowed) {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      status: "blocked",
+      failureCode: budget.reason ?? "policy_blocked",
+    }).catch(() => undefined);
+    return jsonError("Application delivery policy blocked this email", statusForPolicyReason(budget.reason), {
+      code: budget.reason ?? "policy_blocked",
+      trackingId: tracked.id,
+      appId,
+      policy: {
+        mode: budget.mode,
+        circuitState: budget.circuit_state,
+        minuteUsed: budget.minute_used,
+        minuteLimit: budget.minute_limit,
+        dayUsed: budget.day_used,
+        dailyLimit: budget.daily_limit,
+      },
+    });
   }
 
   try {
@@ -128,50 +192,42 @@ export async function POST(request: NextRequest) {
       });
     }
   } catch {
-    // A suppression lookup failure must not erase traceability. Resend's own
-    // suppression controls remain authoritative at delivery time.
+    // The send remains tracked. Provider-side suppression remains authoritative.
   }
 
   const domain = process.env.LVL_MAIL_SENDING_DOMAIN ?? "mail.lvltechmx.com";
-  const resend = new Resend(resendKey);
-
-  const { data, error } = await resend.emails.send(
-    {
-      from: `${brand.name} <${brand.senderLocalPart}@${domain}>`,
-      to: [to],
-      subject: rendered.subject,
-      html: rendered.html,
-      text: rendered.text,
-      headers: {
-        "X-LVL-Mail-App": appId,
-        "X-LVL-Mail-Tracking": tracked.id,
-        "X-LVL-Mail-Priority": priority,
-      },
-      tags: [
-        { name: "app", value: appId },
-        { name: "tracking_id", value: tracked.id },
-        { name: "template", value: template },
-        { name: "priority", value: priority.toLowerCase() },
-      ],
+  const result = await provider.send({
+    from: `${brand.name} <${brand.senderLocalPart}@${domain}>`,
+    to,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    headers: {
+      "X-LVL-Mail-App": appId,
+      "X-LVL-Mail-Tracking": tracked.id,
+      "X-LVL-Mail-Priority": priority,
     },
-    { idempotencyKey: `${appId}/${idempotencyKey}` },
-  );
+    tags: [
+      { name: "app", value: appId },
+      { name: "tracking_id", value: tracked.id },
+      { name: "template", value: template },
+      { name: "priority", value: priority.toLowerCase() },
+    ],
+    idempotencyKey: `${appId}/${idempotencyKey}`,
+  });
 
-  if (error || !data?.id) {
-    const providerCode = error && typeof error === "object" && "name" in error
-      ? String(error.name)
-      : "provider_rejected";
-    try {
-      await setTrackedMessageResult({
+  if (!result.ok) {
+    await Promise.allSettled([
+      setTrackedMessageResult({
         trackingId: tracked.id,
         status: "provider_rejected",
-        failureCode: providerCode,
-      });
-    } catch {
-      // The initial tracking record already exists and preserves the attempt.
-    }
+        failureCode: result.errorCode,
+      }),
+      recordProviderOutcome(appId, false),
+    ]);
     return jsonError("Provider rejected email", 502, {
-      providerCode,
+      providerCode: result.errorCode,
+      provider: result.provider,
       trackingId: tracked.id,
       appId,
     });
@@ -181,18 +237,18 @@ export async function POST(request: NextRequest) {
   try {
     await setTrackedMessageResult({
       trackingId: tracked.id,
-      providerId: data.id,
+      providerId: result.id,
       status: "accepted",
     });
   } catch {
-    // Resend received the tracking_id tag, so its signed webhook can reconcile
-    // this row even if this post-send update experiences a transient failure.
     trackingState = "event-reconciliation";
   }
+  void recordProviderOutcome(appId, true);
 
   return NextResponse.json({
     ok: true,
-    id: data.id,
+    id: result.id,
+    provider: result.provider,
     trackingId: tracked.id,
     appId,
     template,
@@ -200,5 +256,12 @@ export async function POST(request: NextRequest) {
     status: "accepted",
     delivery: policy,
     tracking: trackingState,
+    reputation: reputation.state.reputation_state,
+    quota: {
+      minuteUsed: budget.minute_used,
+      minuteLimit: budget.minute_limit,
+      dayUsed: budget.day_used,
+      dailyLimit: budget.daily_limit,
+    },
   }, { status: 202 });
 }

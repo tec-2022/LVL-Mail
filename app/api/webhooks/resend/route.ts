@@ -5,6 +5,7 @@ import {
   upsertSuppression,
 } from "@/lib/supabase-rest";
 import { recordTrackedEvent } from "@/lib/mail-tracking";
+import { evaluateReputation } from "@/lib/reputation-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -100,8 +101,9 @@ export async function POST(request: NextRequest) {
   const isEmailEvent = event.type.startsWith("email.");
 
   try {
+    let linked: { message_id: string; app_id: string } | null = null;
     if (isEmailEvent) {
-      const linked = await recordTrackedEvent({
+      linked = await recordTrackedEvent({
         eventId: id,
         providerEmailId,
         trackingId,
@@ -131,6 +133,15 @@ export async function POST(request: NextRequest) {
       ) {
         await upsertSuppression({ email: recipient, reason: "bounce", source: event.type });
       }
+    }
+
+    // Re-evaluate only on events that change the reputation window or can help
+    // it recover. This stays per-app so one product never penalizes another.
+    if (
+      linked?.app_id &&
+      ["email.delivered", "email.bounced", "email.complained", "email.suppressed"].includes(event.type)
+    ) {
+      await evaluateReputation(linked.app_id);
     }
   } catch {
     return NextResponse.json({ ok: false, error: "Webhook persistence failed" }, { status: 500 });
