@@ -23,7 +23,8 @@ import {
 } from "@/lib/control-plane";
 import { reputationAllows } from "@/lib/reputation-guard";
 import { getMailProvider } from "@/lib/mail-provider";
-import { getEffectiveTemplateCopy, renderStudioTemplate } from "@/lib/template-studio";
+import { getPublishedTemplateVersion, renderStudioTemplate, versionToCopy } from "@/lib/template-studio";
+import { attachTemplateAttribution, type TemplateSource } from "@/lib/template-attribution";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,12 +80,14 @@ export async function POST(request: NextRequest) {
   }
 
   let rendered;
-  let templateVersion: "base" | "published" = "base";
+  let templateSource: TemplateSource = "base";
+  let templateVersion: number | null = null;
   try {
-    const managedCopy = await getEffectiveTemplateCopy(appId, template);
-    if (managedCopy) {
-      rendered = renderStudioTemplate(brand, template, variables, managedCopy);
-      templateVersion = "published";
+    const published = await getPublishedTemplateVersion(appId, template).catch(() => null);
+    if (published) {
+      rendered = renderStudioTemplate(brand, template, variables, versionToCopy(published));
+      templateSource = "published";
+      templateVersion = published.version;
     } else {
       rendered = renderTemplate(brand, template, variables);
     }
@@ -127,6 +130,25 @@ export async function POST(request: NextRequest) {
       status: tracked.status,
       idempotentReplay: true,
     }, { status: tracked.provider_id ? 202 : 409 });
+  }
+
+  try {
+    await attachTemplateAttribution({
+      messageId: tracked.id,
+      source: templateSource,
+      version: templateVersion,
+    });
+  } catch {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      status: "failed",
+      failureCode: "template_attribution_failed",
+    }).catch(() => undefined);
+    return jsonError("Could not persist template attribution", 503, {
+      code: "template_attribution_required",
+      trackingId: tracked.id,
+      appId,
+    });
   }
 
   const appPolicy = await getAppPolicy(appId);
@@ -214,13 +236,16 @@ export async function POST(request: NextRequest) {
       "X-LVL-Mail-App": appId,
       "X-LVL-Mail-Tracking": tracked.id,
       "X-LVL-Mail-Priority": priority,
+      "X-LVL-Mail-Template-Source": templateSource,
+      ...(templateVersion ? { "X-LVL-Mail-Template-Version": String(templateVersion) } : {}),
     },
     tags: [
       { name: "app", value: appId },
       { name: "tracking_id", value: tracked.id },
       { name: "template", value: template },
       { name: "priority", value: priority.toLowerCase() },
-      { name: "template_source", value: templateVersion },
+      { name: "template_source", value: templateSource },
+      ...(templateVersion ? [{ name: "template_version", value: String(templateVersion) }] : []),
     ],
     idempotencyKey: `${appId}/${idempotencyKey}`,
   });
@@ -261,7 +286,8 @@ export async function POST(request: NextRequest) {
     trackingId: tracked.id,
     appId,
     template,
-    templateSource: templateVersion,
+    templateSource,
+    templateVersion,
     priority,
     status: "accepted",
     delivery: policy,
