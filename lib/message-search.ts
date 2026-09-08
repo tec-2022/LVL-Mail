@@ -4,6 +4,7 @@ import type { TrackedMessage } from "@/lib/mail-tracking";
 export type MessageSearchFilters = {
   query?: string;
   appId?: string;
+  allowedAppIds?: string[] | null;
   templateKey?: string;
   templateVersion?: number | null;
   status?: string;
@@ -50,13 +51,21 @@ function normalizedDate(value?: string, endOfDay = false) {
 
 export async function searchMessages(filters: MessageSearchFilters): Promise<TrackedMessage[]> {
   if (!supabaseConfigured()) return [];
+  const appId = filters.appId?.trim() || null;
+  const allowed = filters.allowedAppIds === null || filters.allowedAppIds === undefined
+    ? null
+    : [...new Set(filters.allowedAppIds.map((value) => value.trim()).filter(Boolean))];
+  if (allowed && allowed.length === 0) return [];
+  if (appId && allowed && !allowed.includes(appId)) return [];
+
   try {
     const version = Number(filters.templateVersion);
     const rows = await request<TrackedMessage[]>("/rest/v1/rpc/mail_search_messages", {
       method: "POST",
       body: JSON.stringify({
         p_query: filters.query?.trim() || null,
-        p_app_id: filters.appId?.trim() || null,
+        p_app_id: appId,
+        p_allowed_app_ids: allowed,
         p_template_key: filters.templateKey?.trim() || null,
         p_template_version: Number.isInteger(version) && version > 0 ? version : null,
         p_status: filters.status?.trim() || null,

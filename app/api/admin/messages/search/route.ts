@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { appendAccessAudit, authorizeAdminRequest } from "@/lib/iam";
+import { appendAccessAudit, authorizeAdminRequest, scopeAppIds } from "@/lib/iam";
 import { searchMessages } from "@/lib/message-search";
 
 export const runtime = "nodejs";
@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
   const messages = await searchMessages({
     query: text(body.query),
     appId,
+    allowedAppIds: scopeAppIds(principal),
     templateKey: text(body.templateKey, 64),
     templateVersion: Number.isInteger(templateVersion) && templateVersion > 0 ? templateVersion : null,
     status: text(body.status, 64),
@@ -57,6 +58,7 @@ export async function POST(request: NextRequest) {
       templateKey: text(body.templateKey, 64) || null,
       status: text(body.status, 64) || null,
       providerName: text(body.providerName, 64) || null,
+      scope: principal.allApps ? "all" : principal.appIds,
       resultCount: messages.length,
     },
   }).catch(() => undefined);

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { RecoveryActions } from "@/components/recovery-actions";
 import { resolveRegisteredApp } from "@/lib/app-registry";
@@ -7,7 +7,7 @@ import { getTrackedMessage, getTrackedMessageEvents } from "@/lib/mail-tracking"
 import { diagnoseMessage, getReplayContext } from "@/lib/search-recovery";
 import { getSafeReplayDecision } from "@/lib/replay-safety";
 import { getProviderTopology } from "@/lib/mail-provider";
-import { getPagePrincipal, hasPermission } from "@/lib/iam";
+import { canAccessApp, getPagePrincipal, hasPermission } from "@/lib/iam";
 
 export const metadata = { title: "Detalle de correo" };
 
@@ -49,12 +49,16 @@ function templateVersionLabel(source: string, version: number | null) {
 }
 
 export default async function MessageTrackingPage({ params }: { params: Promise<{ messageId: string }> }) {
+  const principal = await getPagePrincipal();
+  if (!principal) redirect("/login?error=access");
+  if (!hasPermission(principal.role, "messages.read")) redirect("/");
+
   const { messageId } = await params;
   const message = await getTrackedMessage(messageId);
   if (!message) notFound();
+  if (!canAccessApp(principal, message.app_id)) redirect("/activity");
 
-  const principal = await getPagePrincipal();
-  const canReplay = Boolean(principal && hasPermission(principal.role, "messages.replay"));
+  const canReplay = hasPermission(principal.role, "messages.replay");
   const [events, app, replayContext] = await Promise.all([
     getTrackedMessageEvents(message.id),
     resolveRegisteredApp(message.app_id),

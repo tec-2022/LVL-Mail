@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { appendAccessAudit, authorizeAdminRequest, listStaffMembers, updateStaffMember, type StaffRole } from "@/lib/iam";
+import { listRegisteredApps } from "@/lib/app-registry";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,8 +30,25 @@ export async function PATCH(
   const enabled = typeof body.enabled === "boolean" ? body.enabled : target.is_enabled;
   if (!roles.has(role)) return NextResponse.json({ ok: false, error: "Rol inválido" }, { status: 400 });
 
+  const requestedAllApps = typeof body.allApps === "boolean" ? body.allApps : target.all_apps;
+  const requestedAppIds = Array.isArray(body.appIds)
+    ? body.appIds.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean)
+    : target.app_ids;
+  const allApps = role === "owner" || role === "admin" ? true : requestedAllApps;
+  const appIds = allApps ? [] : [...new Set(requestedAppIds)];
+
+  if (!allApps && appIds.length === 0) {
+    return NextResponse.json({ ok: false, error: "Selecciona al menos una aplicación" }, { status: 400 });
+  }
+  if (!allApps) {
+    const validIds = new Set((await listRegisteredApps()).map((app) => app.id));
+    if (appIds.some((appId) => !validIds.has(appId))) {
+      return NextResponse.json({ ok: false, error: "El scope contiene una aplicación inválida" }, { status: 400 });
+    }
+  }
+
   try {
-    const member = await updateStaffMember({ targetUserId: userId, role, enabled });
+    const member = await updateStaffMember({ targetUserId: userId, role, enabled, allApps, appIds });
     await appendAccessAudit({
       principal,
       permission: "team.manage",
@@ -43,6 +61,10 @@ export async function PATCH(
         nextRole: role,
         previousEnabled: target.is_enabled,
         nextEnabled: enabled,
+        previousAllApps: target.all_apps,
+        nextAllApps: allApps,
+        previousAppIds: target.app_ids,
+        nextAppIds: appIds,
       },
     }).catch(() => undefined);
     return NextResponse.json({ ok: true, member });

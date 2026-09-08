@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { TemplateStudioEditor } from "@/components/template-studio-editor";
 import { resolveRegisteredApp } from "@/lib/app-registry";
@@ -10,6 +10,7 @@ import {
   templateDefinitions,
   versionToCopy,
 } from "@/lib/template-studio";
+import { canAccessApp, getPagePrincipal, hasPermission } from "@/lib/iam";
 
 export const metadata = { title: "Editor de plantilla" };
 
@@ -18,7 +19,12 @@ function isTemplateKey(value: string): value is TemplateKey {
 }
 
 export default async function TemplateEditorPage({ params }: { params: Promise<{ appId: string; templateKey: string }> }) {
+  const principal = await getPagePrincipal();
+  if (!principal) redirect("/login?error=access");
+  if (!hasPermission(principal.role, "templates.read")) redirect("/");
+
   const { appId, templateKey: rawTemplateKey } = await params;
+  if (!canAccessApp(principal, appId)) redirect("/templates");
   if (!isTemplateKey(rawTemplateKey)) notFound();
   const templateKey = rawTemplateKey;
   const app = await resolveRegisteredApp(appId);
@@ -32,7 +38,7 @@ export default async function TemplateEditorPage({ params }: { params: Promise<{
   const initialCopy = workingVersion ? versionToCopy(workingVersion) : definition.defaults;
   const preview = renderStudioTemplate(app, templateKey, definition.sampleVariables, initialCopy);
 
-  return <AppShell active="Aplicaciones"><PageHeader eyebrow="Template Studio" title={`${definition.name} · ${app.name}`} description="El preview usa datos de muestra. Guardar crea o actualiza un draft; publicar cambia producción sin redeployar la web." action={<Link className="secondary-button" href={`/apps/${appId}/templates`}>← Plantillas</Link>} />
+  return <AppShell active="Aplicaciones" requiredPermission="templates.read" appId={appId}><PageHeader eyebrow="Template Studio" title={`${definition.name} · ${app.name}`} description="El preview usa datos de muestra. Las mutaciones se autorizan por acción y por aplicación en el servidor." action={<Link className="secondary-button" href={`/apps/${appId}/templates`}>← Plantillas</Link>} />
     <TemplateStudioEditor
       appId={appId}
       appName={app.name}

@@ -7,23 +7,24 @@ This document defines the internal staff access model for the LVL Mail control p
 - Invite-only. There is no public staff sign-up path.
 - Supabase Auth verifies identity; LVL Mail authorization is resolved server-side from `mail_staff_members` and app scopes on every sensitive request.
 - Authorization never trusts `user_metadata` or a client-supplied role.
-- Role changes take effect on the next request because permissions are read from persistence, not cached only in JWT claims.
+- Role, status and application-scope changes take effect on the next privileged request because authorization is read from persistence instead of trusting cached JWT role claims.
 - The legacy Basic Auth credential remains a temporary break-glass path until production IAM is proven, then should be disabled.
-- All privileged actions emit an immutable audit record with actor, role, permission, app scope and action details.
+- All privileged actions emit an append-only audit record with actor, role, permission, app and safe action details.
+- Scope is enforced before loading sensitive app data, not only when rendering navigation or buttons.
 
 ## Roles
 
 ### Owner
-Full control of LVL Mail, including team membership and role assignment. Only Owner can grant or revoke Owner.
+Full global control of LVL Mail, including staff membership, security configuration and role/scope assignment. Owner is always global.
 
 ### Admin
-Can manage applications, templates, API keys, incidents, search/recovery and platform configuration, but cannot promote users to Owner or remove the last Owner.
+Global application administrator. Can manage applications, templates, API keys, incidents and Search & Recovery. Can view the team but cannot manage membership or infrastructure/security settings.
 
 ### Operator
-Operational role. Can investigate messages, acknowledge/resolve incidents, run safe replay when policy allows, and send template tests. Cannot rotate application credentials, publish templates or manage staff.
+Operational role. Can investigate messages, acknowledge/resolve incidents, run Safe Replay when policy allows, and send template tests. It can be global or limited to selected applications.
 
 ### Viewer
-Read-only access to dashboards, applications, templates, activity, reputation, operations and search.
+Read-only access to dashboards, applications, templates, activity, reputation, operations and search. It can be global or limited to selected applications.
 
 ## Permissions
 
@@ -47,9 +48,37 @@ Read-only access to dashboards, applications, templates, activity, reputation, o
 - `team.manage`
 - `security.manage`
 
+`security.manage` is Owner-only and gates infrastructure settings. `team.manage` is also Owner-only.
+
 ## App scopes
 
-A staff member can be global (`all_apps=true`) or limited to explicit applications. Owner and Admin are expected to be global. Operator and Viewer may be restricted to selected app IDs.
+A staff member is either global (`all_apps=true`) or limited to explicit rows in `mail_staff_app_scopes`.
+
+- Owner: always global.
+- Admin: always global.
+- Operator: global or scoped.
+- Viewer: global or scoped.
+- A scoped Operator/Viewer must have at least one application.
+- Scope updates are atomic with role/status changes through `mail_update_staff_access()`.
+
+The allow-list is enforced across:
+
+- dashboard metrics and visible app counts;
+- application fleet and control pages;
+- Template Studio app/version pages;
+- message search and Search & Recovery results;
+- message detail/timeline/recovery loading;
+- reputation metrics;
+- SLO fleet and incident lists/details;
+- app-specific administrative APIs.
+
+A scoped user cannot infer whole-fleet aggregate metrics simply because a dashboard is global in layout.
+
+## Database boundary
+
+Internal persistence remains service-role only. Foundation and IAM RPCs use `SECURITY INVOKER`, explicit `service_role` grants and qualified object names with a controlled `search_path`.
+
+Scoped analytics/search RPCs accept an application allow-list. `NULL` means a global principal; a non-empty array means only those application IDs may contribute rows or metrics. An empty application scope returns no data at the server layer.
 
 ## Authentication
 
@@ -63,8 +92,10 @@ Production staff authentication uses Supabase Auth with SSR cookies. Server code
 
 - No public staff registration.
 - Disabled staff cannot authorize any request even with a still-valid Auth session.
-- The last Owner cannot be demoted or disabled.
-- Admin cannot create, promote, demote or delete Owner accounts.
-- App-scoped staff cannot operate on other apps.
+- The last active Owner cannot be demoted or disabled.
+- Owner/Admin scopes cannot be narrowed accidentally; both are global by invariant.
+- Scoped Operator/Viewer accounts require at least one application.
+- App-scoped staff cannot read, search, infer aggregate metrics for, or operate on other apps.
+- Sensitive app data is not loaded before the scope check.
 - `service_role` never reaches browser code.
-- Staff membership tables use RLS and no anon/authenticated Data API grants; server authorization uses service-role access only.
+- Staff membership/scope/audit tables use RLS and no anon/authenticated Data API grants.

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { AppControlCenter } from "@/components/app-control-center";
 import { resolveRegisteredApp } from "@/lib/app-registry";
@@ -11,7 +11,7 @@ import {
   listTemplateSettings,
 } from "@/lib/control-plane";
 import { getReputationState } from "@/lib/reputation-guard";
-import { getPagePrincipal, hasPermission } from "@/lib/iam";
+import { canAccessApp, getPagePrincipal, hasPermission } from "@/lib/iam";
 
 export const metadata = { title: "Control de aplicación" };
 
@@ -30,13 +30,16 @@ const statusLabels: Record<string, string> = {
 };
 
 export default async function AppTrackingPage({ params }: { params: Promise<{ appId: string }> }) {
+  const principal = await getPagePrincipal();
+  if (!principal) redirect("/login?error=access");
+  if (!hasPermission(principal.role, "apps.read")) redirect("/");
+
   const { appId } = await params;
+  if (!canAccessApp(principal, appId)) redirect("/apps");
   const app = await resolveRegisteredApp(appId);
   if (!app) notFound();
 
-  const principal = await getPagePrincipal();
-  const canManage = Boolean(principal && hasPermission(principal.role, "apps.manage"));
-
+  const canManage = hasPermission(principal.role, "apps.manage");
   const [summary, messages, policy, reputation] = await Promise.all([
     getAppTrackingSummary(appId),
     getAppTrackedMessages(appId, 100),

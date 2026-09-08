@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { Icon } from "@/components/icons";
-import { getPagePrincipal, hasPermission, type Permission } from "@/lib/iam";
+import { canAccessApp, getPagePrincipal, hasPermission, type Permission } from "@/lib/iam";
 
 const nav: ReadonlyArray<readonly [string, string, string, Permission]> = [
   ["/", "Resumen", "grid", "platform.read"],
@@ -12,7 +12,7 @@ const nav: ReadonlyArray<readonly [string, string, string, Permission]> = [
   ["/reputation", "Reputación", "shield", "reputation.read"],
   ["/operations", "Operaciones", "activity", "incidents.read"],
   ["/team", "Equipo", "apps", "team.read"],
-  ["/settings", "Configuración", "settings", "platform.read"],
+  ["/settings", "Configuración", "settings", "security.manage"],
 ];
 
 function initials(value: string) {
@@ -23,7 +23,7 @@ export async function AppShell({ active, children, requiredPermission, appId }: 
   const principal = await getPagePrincipal();
   if (!principal) redirect("/login?error=access");
   if (requiredPermission && !hasPermission(principal.role, requiredPermission)) redirect("/");
-  if (appId && !principal.allApps && !principal.appIds.includes(appId)) redirect("/apps");
+  if (appId && !canAccessApp(principal, appId)) redirect("/apps");
 
   const providerReady = Boolean(process.env.RESEND_API_KEY);
   const providerName = (process.env.LVL_MAIL_PROVIDER ?? "resend").toLowerCase();

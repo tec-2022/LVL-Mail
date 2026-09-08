@@ -226,12 +226,13 @@ export type DashboardMetrics = {
   suppressed: number;
 };
 
-export async function getDashboardMetrics(): Promise<DashboardMetrics | null> {
+export async function getDashboardMetrics(appIds: string[] | null = null): Promise<DashboardMetrics | null> {
   if (!supabaseConfigured()) return null;
+  if (appIds && appIds.length === 0) return { accepted: 0, delivered: 0, bounced: 0, complained: 0, suppressed: 0 };
   try {
     const rows = await supabaseRequest<DashboardMetrics[]>(
       "/rest/v1/rpc/mail_dashboard_metrics",
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify({ p_app_ids: appIds }) },
     );
     return rows[0] ?? null;
   } catch {
@@ -268,12 +269,13 @@ export type AppHealth = {
   complaint_rate: number | null;
 };
 
-export async function getAppHealth(): Promise<AppHealth[]> {
+export async function getAppHealth(appIds: string[] | null = null): Promise<AppHealth[]> {
   if (!supabaseConfigured()) return [];
+  if (appIds && appIds.length === 0) return [];
   try {
     return await supabaseRequest<AppHealth[]>(
       "/rest/v1/rpc/mail_app_health",
-      { method: "POST", body: "{}" },
+      { method: "POST", body: JSON.stringify({ p_app_ids: appIds }) },
     );
   } catch {
     return [];
