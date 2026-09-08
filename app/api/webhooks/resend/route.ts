@@ -10,6 +10,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type EventTag = { name?: string; value?: string };
+type EventTags = Record<string, string> | EventTag[] | undefined;
 type WebhookEvent = {
   type: string;
   created_at?: string;
@@ -18,7 +19,7 @@ type WebhookEvent = {
     email?: string;
     recipient?: string;
     to?: string[];
-    tags?: Record<string, string> | EventTag[];
+    tags?: EventTags;
     bounce?: { type?: string; subType?: string; message?: string };
   };
 };
@@ -30,9 +31,7 @@ function recipientFrom(event: WebhookEvent) {
   return Array.isArray(to) && typeof to[0] === "string" ? to[0] : null;
 }
 
-function normalizedTags(value: WebhookEvent["data"] extends infer D
-  ? D extends { tags?: infer T } ? T : never
-  : never) {
+function normalizedTags(value: EventTags) {
   const result: Record<string, string> = {};
   if (Array.isArray(value)) {
     for (const tag of value) {
@@ -92,8 +91,6 @@ export async function POST(request: NextRequest) {
   }
 
   if (!supabaseConfigured()) {
-    // Email delivery without persistence is not a supported production state.
-    // Return 5xx so provider retries rather than silently losing traceability.
     return NextResponse.json({ ok: false, error: "Tracking persistence is not configured" }, { status: 503 });
   }
 
@@ -113,9 +110,6 @@ export async function POST(request: NextRequest) {
         occurredAt: event.created_at ?? null,
       });
 
-      // A verified email event without a tracked message is never accepted as
-      // "good enough". Returning 5xx lets Resend retry while the send-side row
-      // or provider id is reconciled.
       if (!linked) {
         return NextResponse.json({ ok: false, error: "Email event has no tracking owner" }, { status: 503 });
       }
