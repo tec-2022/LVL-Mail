@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { authenticateAdminRequest } from "@/lib/admin-auth";
+import { appendAccessAudit, authorizeAdminRequest, type Permission } from "@/lib/iam";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import { priorityForTemplate, type TemplateKey } from "@/lib/mail-policy";
 import { getMailProvider } from "@/lib/mail-provider";
@@ -51,11 +51,18 @@ function isTemplateKey(value: string): value is TemplateKey {
   return value in templateDefinitions;
 }
 
+function permissionForAction(action: string): Permission {
+  if (action === "preview") return "templates.read";
+  if (action === "save_draft") return "templates.edit";
+  if (action === "publish" || action === "rollback") return "templates.publish";
+  if (action === "test_send") return "templates.test_send";
+  return "templates.edit";
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ appId: string; templateKey: string }> },
 ) {
-  if (!authenticateAdminRequest(request)) return jsonError("Unauthorized administrator", 401);
   const { appId, templateKey: rawTemplateKey } = await params;
   if (!isTemplateKey(rawTemplateKey)) return jsonError("Unknown template", 404);
   const templateKey = rawTemplateKey;
@@ -69,7 +76,11 @@ export async function POST(
     return jsonError("Invalid JSON body", 400);
   }
   const action = typeof body.action === "string" ? body.action : "";
-  const actor = process.env.LVL_MAIL_ADMIN_USER || "admin";
+  const permission = permissionForAction(action);
+  const principal = await authorizeAdminRequest(request, permission, appId);
+  if (!principal) return jsonError("Forbidden", 403);
+  const actor = principal.email;
+  const requestId = request.headers.get("x-vercel-id") || request.headers.get("x-request-id");
 
   if (action === "preview") {
     const copy = parseCopy(body.copy);
@@ -95,6 +106,7 @@ export async function POST(
         changeNote: typeof body.changeNote === "string" ? body.changeNote.slice(0, 500) : "",
         actor,
       });
+      await appendAccessAudit({ principal, permission, action: "template.draft.saved", appId, requestId, details: { templateKey, version: version.version } }).catch(() => undefined);
       return NextResponse.json({ ok: true, version, versions: await listTemplateVersions(appId, templateKey) });
     } catch (error) {
       return jsonError(error instanceof Error ? error.message : "Could not save draft", 422);
@@ -106,6 +118,7 @@ export async function POST(
     if (!Number.isInteger(version) || version < 1) return jsonError("Invalid version", 400);
     try {
       const published = await publishTemplateVersion(appId, templateKey, version, actor);
+      await appendAccessAudit({ principal, permission, action: "template.published", appId, requestId, details: { templateKey, version } }).catch(() => undefined);
       return NextResponse.json({ ok: true, published, versions: await listTemplateVersions(appId, templateKey) });
     } catch (error) {
       return jsonError(error instanceof Error ? error.message : "Could not publish template", 422);
@@ -117,6 +130,7 @@ export async function POST(
     if (!Number.isInteger(sourceVersion) || sourceVersion < 1) return jsonError("Invalid version", 400);
     try {
       const published = await rollbackTemplateVersion(appId, templateKey, sourceVersion, actor);
+      await appendAccessAudit({ principal, permission, action: "template.rolled_back", appId, requestId, details: { templateKey, sourceVersion, publishedVersion: published.version } }).catch(() => undefined);
       return NextResponse.json({ ok: true, published, versions: await listTemplateVersions(appId, templateKey) });
     } catch (error) {
       return jsonError(error instanceof Error ? error.message : "Could not rollback template", 422);
@@ -211,12 +225,14 @@ export async function POST(
         setTrackedMessageResult({ trackingId, status: "provider_rejected", failureCode: result.errorCode }),
         recordProviderOutcome(appId, false),
       ]);
+      await appendAccessAudit({ principal, permission, action: "template.test_send.rejected", appId, requestId, details: { templateKey, trackingId, provider: result.provider, providerCode: result.errorCode } }).catch(() => undefined);
       return jsonError("Provider rejected test email", 502, { trackingId, providerCode: result.errorCode });
     }
 
     await Promise.allSettled([
       setTrackedMessageResult({ trackingId, providerId: result.id, status: "accepted" }),
       recordProviderOutcome(appId, true),
+      appendAccessAudit({ principal, permission, action: "template.test_send.accepted", appId, requestId, details: { templateKey, trackingId, provider: result.provider } }),
     ]);
     return NextResponse.json({ ok: true, trackingId, providerId: result.id, provider: result.provider }, { status: 202 });
   }
