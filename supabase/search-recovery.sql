@@ -55,6 +55,7 @@ create or replace function public.mail_search_messages(
   p_query text,
   p_app_id text,
   p_template_key text,
+  p_template_version integer,
   p_status text,
   p_provider_name text,
   p_recipient_hash text,
@@ -114,6 +115,7 @@ as $$
       or m.idempotency_key = trim(p_query))
     and (nullif(trim(p_app_id), '') is null or m.app_id = trim(p_app_id))
     and (nullif(trim(p_template_key), '') is null or m.template_key = trim(p_template_key))
+    and (p_template_version is null or m.template_version = p_template_version)
     and (nullif(trim(p_status), '') is null or m.status = trim(p_status))
     and (nullif(trim(p_provider_name), '') is null or m.provider_name = trim(p_provider_name))
     and (nullif(trim(p_recipient_hash), '') is null or m.recipient_hash = trim(p_recipient_hash))
@@ -178,10 +180,10 @@ begin
 end;
 $$;
 
-revoke execute on function public.mail_search_messages(text,text,text,text,text,text,timestamptz,timestamptz,integer) from public, anon, authenticated;
+revoke execute on function public.mail_search_messages(text,text,text,integer,text,text,text,timestamptz,timestamptz,integer) from public, anon, authenticated;
 revoke execute on function public.mail_claim_replay(uuid,uuid,text,text) from public, anon, authenticated;
 revoke execute on function public.mail_purge_expired_recovery_envelopes() from public, anon, authenticated;
 
-grant execute on function public.mail_search_messages(text,text,text,text,text,text,timestamptz,timestamptz,integer) to service_role;
+grant execute on function public.mail_search_messages(text,text,text,integer,text,text,text,timestamptz,timestamptz,integer) to service_role;
 grant execute on function public.mail_claim_replay(uuid,uuid,text,text) to service_role;
 grant execute on function public.mail_purge_expired_recovery_envelopes() to service_role;
