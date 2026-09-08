@@ -1,7 +1,9 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { listRegisteredApps } from "@/lib/app-registry";
 import { evaluateReliability, getFleetReliability, listIncidents } from "@/lib/operations";
+import { filterAppScoped, getPagePrincipal, scopeAppIds } from "@/lib/iam";
 
 export const metadata = { title: "Operaciones" };
 
@@ -30,16 +32,17 @@ function healthFor(row: Awaited<ReturnType<typeof getFleetReliability>>[number])
 }
 
 export default async function OperationsPage() {
-  const apps = await listRegisteredApps();
+  const principal = await getPagePrincipal();
+  if (!principal) redirect("/login?error=access");
+  const scope = scopeAppIds(principal);
+  const apps = filterAppScoped(principal, await listRegisteredApps(), (app) => app.id);
 
-  // Also acts as a safe manual sweep before a scheduled evaluator is configured.
-  // Failures are isolated per app so the operations UI remains readable while
-  // the dedicated persistence schema is still in preparation mode.
+  // A manual UI sweep only evaluates applications the current principal can see.
   await Promise.allSettled(apps.slice(0, 100).map((app) => evaluateReliability(app.id)));
 
   const [fleet, incidents] = await Promise.all([
-    getFleetReliability(),
-    listIncidents(100),
+    getFleetReliability(scope),
+    listIncidents(100, scope),
   ]);
 
   const active = incidents.filter((incident) => incident.status !== "resolved");
@@ -50,27 +53,27 @@ export default async function OperationsPage() {
   const providerName = (process.env.LVL_MAIL_PROVIDER ?? "resend").toLowerCase();
   const providerIncident = active.some((incident) => incident.incident_type === "provider_rejections");
 
-  return <AppShell active="Operaciones">
-    <PageHeader eyebrow="Operations & Reliability" title="Operaciones" description="SLOs, incidentes y salud de entrega por aplicación. Las señales P0 se separan de reputación para saber si un problema es interno, del proveedor o del destinatario." />
+  return <AppShell active="Operaciones" requiredPermission="incidents.read">
+    <PageHeader eyebrow="Operations & Reliability" title="Operaciones" description={principal.allApps ? "SLOs, incidentes y salud de entrega por aplicación." : "SLOs e incidentes exclusivamente para las aplicaciones de tu scope."} />
 
     <section className="ops-status-strip">
       <div className={`ops-system-state ${critical.length ? "critical" : active.length ? "warning" : "healthy"}`}>
         <span className="ops-pulse" />
-        <div><span>ESTADO GLOBAL</span><strong>{critical.length ? "Incidente crítico" : active.length ? "Degradación detectada" : "Operación normal"}</strong></div>
+        <div><span>{principal.allApps ? "ESTADO GLOBAL" : "ESTADO DE TU SCOPE"}</span><strong>{critical.length ? "Incidente crítico" : active.length ? "Degradación detectada" : "Operación normal"}</strong></div>
       </div>
-      <div className="ops-provider-state"><span>PROVEEDOR ACTIVO</span><strong>{providerName}</strong><small>{providerIncident ? "Con señales de rechazo" : "Sin incidente de rechazo activo"}</small></div>
+      <div className="ops-provider-state"><span>PROVEEDOR ACTIVO</span><strong>{providerName}</strong><small>{providerIncident ? "Con señales de rechazo visibles" : "Sin incidente de rechazo visible"}</small></div>
     </section>
 
     <section className="metrics-grid ops-metrics">
       <article className="metric-card featured"><span>Incidentes activos</span><strong>{active.length}</strong><small>{critical.length} críticos · {acknowledged.length} reconocidos</small></article>
       <article className="metric-card"><span>Apps saludables</span><strong>{fleet.length ? `${healthyApps}/${fleet.length}` : "—"}</strong><small>Según SLOs y señales de 24 h</small></article>
       <article className="metric-card"><span>Peor aceptación P0 · P95</span><strong>{ms(worstAccept)}</strong><small>Objetivo operativo: ≤ 2 s</small></article>
-      <article className="metric-card"><span>Evaluación</span><strong>Automática</strong><small>Webhook + barrido interno preparado</small></article>
+      <article className="metric-card"><span>Scope</span><strong>{principal.allApps ? "Global" : apps.length}</strong><small>{principal.allApps ? "Toda la flota" : "Aplicaciones autorizadas"}</small></article>
     </section>
 
     <section className="panel ops-incidents-panel">
       <div className="panel-head"><div><span className="eyebrow">INCIDENT COMMAND CENTER</span><h2>Incidentes</h2></div><span className={active.length ? "pill warning" : "pill success"}>{active.length ? `${active.length} activos` : "Sin incidentes"}</span></div>
-      {incidents.length === 0 ? <div className="empty-state"><h2>Sin incidentes registrados</h2><p>Cuando los SLOs crucen un umbral, LVL Mail abrirá aquí un incidente con aplicación, severidad, métricas y timeline.</p></div> : <div className="incident-list">
+      {incidents.length === 0 ? <div className="empty-state"><h2>Sin incidentes visibles</h2><p>Cuando los SLOs de una aplicación dentro de tu scope crucen un umbral, aparecerá aquí.</p></div> : <div className="incident-list">
         {incidents.map((incident) => <Link href={`/operations/incidents/${incident.id}`} className={`incident-row ${incident.status === "resolved" ? "resolved" : incident.severity}`} key={incident.id}>
           <span className={`incident-severity ${incident.severity}`}>{incident.severity === "critical" ? "CRITICAL" : "WARNING"}</span>
           <div className="incident-main"><strong>{incident.title}</strong><span>{incident.summary}</span></div>
@@ -84,7 +87,7 @@ export default async function OperationsPage() {
 
     <section className="panel">
       <div className="panel-head"><div><span className="eyebrow">SLO FLEET VIEW</span><h2>Salud por aplicación</h2></div><span className="pill neutral">24 h / 1 h</span></div>
-      {fleet.length === 0 ? <div className="empty-state"><h2>SLOs preparados</h2><p>Las métricas aparecerán al aplicar la extensión de Operations & Reliability en el Supabase dedicado.</p></div> : <div className="slo-table">
+      {fleet.length === 0 ? <div className="empty-state"><h2>Sin SLOs visibles</h2><p>Las métricas aparecerán para las aplicaciones dentro de tu scope cuando exista actividad.</p></div> : <div className="slo-table">
         <div className="slo-row slo-head"><span>Aplicación</span><span>Estado</span><span>P0 entrega</span><span>P0 accept P95</span><span>P0 delivery P95</span><span>Reject 1h</span><span>Bounce</span><span>Complaint</span></div>
         {fleet.map((row) => { const health = healthFor(row); return <div className="slo-row" key={row.app_id}>
           <div><strong>{row.app_name}</strong><code>{row.app_id}</code></div>
@@ -100,9 +103,9 @@ export default async function OperationsPage() {
     </section>
 
     <section className="ops-slo-explainer">
-      <article><span>P0 ACCEPTANCE</span><strong>Objetivo P95 ≤ 2 s</strong><p>Desde que LVL Mail registra el correo hasta que el proveedor lo acepta. Es nuestra señal de velocidad interna más importante.</p></article>
-      <article><span>P0 DELIVERY</span><strong>Objetivo ≥ 99%</strong><p>Correos P0 aceptados que llegan a entrega. Se observa por separado porque intervienen proveedor, destinatario y red.</p></article>
-      <article><span>REPUTATION</span><strong>Guardrails por app</strong><p>Bounces y complaints pueden restringir tráfico no crítico sin cortar la vía P0 de las demás aplicaciones.</p></article>
+      <article><span>P0 ACCEPTANCE</span><strong>Objetivo P95 ≤ 2 s</strong><p>Desde que LVL Mail registra el correo hasta que el proveedor lo acepta.</p></article>
+      <article><span>P0 DELIVERY</span><strong>Objetivo ≥ 99%</strong><p>Correos P0 aceptados que llegan a entrega.</p></article>
+      <article><span>REPUTATION</span><strong>Guardrails por app</strong><p>Bounces y complaints restringen tráfico no crítico sin afectar otras aplicaciones.</p></article>
     </section>
   </AppShell>;
 }
