@@ -16,6 +16,7 @@ export type TrackingStatus =
 export type TrackedMessage = {
   id: string;
   provider_id: string | null;
+  provider_name: string | null;
   app_id: string;
   template_key: string;
   template_source: "base" | "published" | "studio_test";
@@ -25,6 +26,7 @@ export type TrackedMessage = {
   idempotency_key: string;
   status: TrackingStatus;
   failure_code: string | null;
+  replay_of_message_id: string | null;
   created_at: string;
   accepted_at: string | null;
   delivered_at: string | null;
@@ -38,6 +40,7 @@ export type TrackedEvent = {
   app_id: string | null;
   message_id: string | null;
   event_type: string;
+  payload: Record<string, unknown> | null;
   occurred_at: string;
 };
 
@@ -155,7 +158,7 @@ export async function recordTrackedEvent(input: {
   return rows[0] ?? null;
 }
 
-const messageSelect = "id,provider_id,app_id,template_key,template_source,template_version,priority,recipient_hash,idempotency_key,status,failure_code,created_at,accepted_at,delivered_at,last_event_at,updated_at";
+const messageSelect = "id,provider_id,provider_name,app_id,template_key,template_source,template_version,priority,recipient_hash,idempotency_key,status,failure_code,replay_of_message_id,created_at,accepted_at,delivered_at,last_event_at,updated_at";
 
 export async function getRecentTrackedMessages(limit = 80): Promise<TrackedMessage[]> {
   if (!trackingConfigured()) return [];
@@ -195,7 +198,7 @@ export async function getTrackedMessageEvents(messageId: string): Promise<Tracke
   if (!trackingConfigured()) return [];
   try {
     return await request<TrackedEvent[]>(
-      `/rest/v1/mail_events?message_id=eq.${encodeURIComponent(messageId)}&select=provider_event_id,provider_email_id,app_id,message_id,event_type,occurred_at&order=occurred_at.asc&limit=100`,
+      `/rest/v1/mail_events?message_id=eq.${encodeURIComponent(messageId)}&select=provider_event_id,provider_email_id,app_id,message_id,event_type,payload,occurred_at&order=occurred_at.asc&limit=100`,
     );
   } catch {
     return [];
