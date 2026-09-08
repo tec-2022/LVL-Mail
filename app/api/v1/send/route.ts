@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { Resend } from "resend";
 import {
   deliveryPolicy,
   priorityForTemplate,
@@ -23,6 +22,7 @@ import {
   reserveSendBudget,
 } from "@/lib/control-plane";
 import { reputationAllows } from "@/lib/reputation-guard";
+import { getMailProvider } from "@/lib/mail-provider";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -84,8 +84,8 @@ export async function POST(request: NextRequest) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
   }
 
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!resendKey) return jsonError("Mail provider is not configured", 503);
+  const provider = getMailProvider();
+  if (!provider) return jsonError("Mail provider is not configured", 503, { code: "provider_unavailable" });
   if (!trackingConfigured()) {
     return jsonError("Mandatory mail tracking is not configured", 503, { code: "tracking_required" });
   }
@@ -135,9 +135,6 @@ export async function POST(request: NextRequest) {
     });
   }
 
-  // Reputation is isolated per application. A restricted app may continue to
-  // send P0 authentication mail, but cannot send lower-priority traffic until
-  // its 24-hour bounce/complaint window recovers.
   const reputation = await reputationAllows(appId, priority);
   if (!reputation.allowed) {
     await setTrackedMessageResult({
@@ -199,44 +196,38 @@ export async function POST(request: NextRequest) {
   }
 
   const domain = process.env.LVL_MAIL_SENDING_DOMAIN ?? "mail.lvltechmx.com";
-  const resend = new Resend(resendKey);
-
-  const { data, error } = await resend.emails.send(
-    {
-      from: `${brand.name} <${brand.senderLocalPart}@${domain}>`,
-      to: [to],
-      subject: rendered.subject,
-      html: rendered.html,
-      text: rendered.text,
-      headers: {
-        "X-LVL-Mail-App": appId,
-        "X-LVL-Mail-Tracking": tracked.id,
-        "X-LVL-Mail-Priority": priority,
-      },
-      tags: [
-        { name: "app", value: appId },
-        { name: "tracking_id", value: tracked.id },
-        { name: "template", value: template },
-        { name: "priority", value: priority.toLowerCase() },
-      ],
+  const result = await provider.send({
+    from: `${brand.name} <${brand.senderLocalPart}@${domain}>`,
+    to,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    headers: {
+      "X-LVL-Mail-App": appId,
+      "X-LVL-Mail-Tracking": tracked.id,
+      "X-LVL-Mail-Priority": priority,
     },
-    { idempotencyKey: `${appId}/${idempotencyKey}` },
-  );
+    tags: [
+      { name: "app", value: appId },
+      { name: "tracking_id", value: tracked.id },
+      { name: "template", value: template },
+      { name: "priority", value: priority.toLowerCase() },
+    ],
+    idempotencyKey: `${appId}/${idempotencyKey}`,
+  });
 
-  if (error || !data?.id) {
-    const providerCode = error && typeof error === "object" && "name" in error
-      ? String(error.name)
-      : "provider_rejected";
+  if (!result.ok) {
     await Promise.allSettled([
       setTrackedMessageResult({
         trackingId: tracked.id,
         status: "provider_rejected",
-        failureCode: providerCode,
+        failureCode: result.errorCode,
       }),
       recordProviderOutcome(appId, false),
     ]);
     return jsonError("Provider rejected email", 502, {
-      providerCode,
+      providerCode: result.errorCode,
+      provider: result.provider,
       trackingId: tracked.id,
       appId,
     });
@@ -246,7 +237,7 @@ export async function POST(request: NextRequest) {
   try {
     await setTrackedMessageResult({
       trackingId: tracked.id,
-      providerId: data.id,
+      providerId: result.id,
       status: "accepted",
     });
   } catch {
@@ -256,7 +247,8 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    id: data.id,
+    id: result.id,
+    provider: result.provider,
     trackingId: tracked.id,
     appId,
     template,
