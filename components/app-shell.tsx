@@ -19,9 +19,11 @@ function initials(value: string) {
   return value.split(/\s+|@/).filter(Boolean).slice(0, 2).map((part) => part[0]?.toUpperCase()).join("") || "LT";
 }
 
-export async function AppShell({ active, children }: { active: string; children: ReactNode }) {
+export async function AppShell({ active, children, requiredPermission, appId }: { active: string; children: ReactNode; requiredPermission?: Permission; appId?: string | null }) {
   const principal = await getPagePrincipal();
   if (!principal) redirect("/login?error=access");
+  if (requiredPermission && !hasPermission(principal.role, requiredPermission)) redirect("/");
+  if (appId && !principal.allApps && !principal.appIds.includes(appId)) redirect("/apps");
 
   const providerReady = Boolean(process.env.RESEND_API_KEY);
   const providerName = (process.env.LVL_MAIL_PROVIDER ?? "resend").toLowerCase();
