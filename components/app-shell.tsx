@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { Icon } from "@/components/icons";
 
@@ -10,7 +11,8 @@ const nav = [
   ["/settings", "Configuración", "settings"],
 ] as const;
 
-export function AppShell({ active, children }: { active: string; children: React.ReactNode }) {
+export function AppShell({ active, children }: { active: string; children: ReactNode }) {
+  const providerReady = Boolean(process.env.RESEND_API_KEY);
   return (
     <div className="shell">
       <aside className="sidebar">
@@ -33,7 +35,7 @@ export function AppShell({ active, children }: { active: string; children: React
       <main className="main">
         <header className="topbar">
           <div><span className="eyebrow">LVL TECH / EMAIL INFRASTRUCTURE</span></div>
-          <div className="topbar-actions"><span className="pill neutral">Resend pendiente</span><div className="avatar">LT</div></div>
+          <div className="topbar-actions"><span className={providerReady ? "pill success" : "pill neutral"}>{providerReady ? "Resend conectado" : "Resend pendiente"}</span><div className="avatar">LT</div></div>
         </header>
         <div className="content">{children}</div>
       </main>
@@ -41,7 +43,7 @@ export function AppShell({ active, children }: { active: string; children: React
   );
 }
 
-export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) {
+export function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: ReactNode }) {
   return <div className="page-header"><div><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{description}</p></div>{action && <div>{action}</div>}</div>;
 }
 
