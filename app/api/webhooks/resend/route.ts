@@ -15,15 +15,15 @@ type WebhookEvent = {
   data?: {
     email_id?: string;
     email?: string;
+    recipient?: string;
     to?: string[];
     tags?: Record<string, string>;
     bounce?: { type?: string; subType?: string; message?: string };
-    [key: string]: unknown;
   };
 };
 
 function recipientFrom(event: WebhookEvent) {
-  const direct = event.data?.email;
+  const direct = event.data?.email ?? event.data?.recipient;
   if (typeof direct === "string") return direct;
   const to = event.data?.to;
   return Array.isArray(to) && typeof to[0] === "string" ? to[0] : null;
@@ -60,11 +60,15 @@ export async function POST(request: NextRequest) {
 
   let event: WebhookEvent;
   try {
-    event = await resend.webhooks.verify({
+    const verified = await resend.webhooks.verify({
       payload,
       headers: { id, timestamp, signature },
       webhookSecret: secret,
-    }) as WebhookEvent;
+    });
+    // Resend returns a discriminated union covering email, contact, domain and
+    // suppression events. LVL Mail intentionally projects only the safe fields
+    // it needs after signature verification.
+    event = verified as unknown as WebhookEvent;
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid webhook signature" }, { status: 400 });
   }
