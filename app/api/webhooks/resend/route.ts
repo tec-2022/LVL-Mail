@@ -7,6 +7,7 @@ import {
 import { recordTrackedEvent } from "@/lib/mail-tracking";
 import { evaluateReputation } from "@/lib/reputation-guard";
 import { attachProvider, evaluateReliability } from "@/lib/operations";
+import { deleteRecoveryEnvelope } from "@/lib/recovery-envelope";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -117,9 +118,14 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: false, error: "Email event has no tracking owner" }, { status: 503 });
       }
 
-      // Provider attribution is operational metadata, never trusted from the
-      // calling application. This webhook route is Resend-specific.
       await attachProvider(linked.message_id, "resend").catch(() => undefined);
+
+      // Recovery payloads are intentionally short-lived. Once an email reaches a
+      // terminal state that must never be replayed, remove the encrypted payload
+      // immediately instead of waiting for TTL cleanup.
+      if (["email.delivered", "email.bounced", "email.complained", "email.suppressed"].includes(event.type)) {
+        await deleteRecoveryEnvelope(linked.message_id).catch(() => undefined);
+      }
     }
 
     const recipient = recipientFrom(event);
@@ -142,7 +148,7 @@ export async function POST(request: NextRequest) {
 
     if (
       linked?.app_id &&
-      ["email.delivered", "email.bounced", "email.complained", "email.suppressed"].includes(event.type)
+      ["email.delivered", "email.bounced", "email.complained", "email.suppressed", "email.failed"].includes(event.type)
     ) {
       await Promise.allSettled([
         evaluateReputation(linked.app_id),
