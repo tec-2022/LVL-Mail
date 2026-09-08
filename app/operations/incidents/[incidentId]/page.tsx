@@ -4,6 +4,7 @@ import { AppShell, PageHeader } from "@/components/app-shell";
 import { IncidentActions } from "@/components/incident-actions";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import { getIncident, listIncidentEvents } from "@/lib/operations";
+import { getPagePrincipal, hasPermission } from "@/lib/iam";
 
 export const metadata = { title: "Incidente" };
 
@@ -29,17 +30,19 @@ export default async function IncidentPage({ params }: { params: Promise<{ incid
   const { incidentId } = await params;
   const incident = await getIncident(incidentId);
   if (!incident) notFound();
+  const principal = await getPagePrincipal();
+  const canManage = Boolean(principal && hasPermission(principal.role, "incidents.manage"));
   const [events, app] = await Promise.all([
     listIncidentEvents(incident.id),
     resolveRegisteredApp(incident.app_id),
   ]);
 
-  return <AppShell active="Operaciones">
+  return <AppShell active="Operaciones" requiredPermission="incidents.read" appId={incident.app_id}>
     <PageHeader eyebrow="Incident command center" title={incident.title} description={`${app?.name ?? incident.app_id} · ${incident.summary}`} action={<Link className="secondary-button" href="/operations">← Operaciones</Link>} />
 
     <section className={`incident-hero ${incident.severity} ${incident.status}`}>
       <div><span className={`incident-severity ${incident.severity}`}>{incident.severity.toUpperCase()}</span><h2>{incident.status === "open" ? "Incidente activo" : incident.status === "acknowledged" ? "En investigación" : "Resuelto"}</h2><p>{incident.summary}</p></div>
-      <IncidentActions incidentId={incident.id} status={incident.status} />
+      {canManage ? <IncidentActions incidentId={incident.id} status={incident.status} /> : <span className="pill neutral">Solo lectura</span>}
     </section>
 
     <section className="two-col">
