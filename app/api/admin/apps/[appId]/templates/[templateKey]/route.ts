@@ -3,9 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { authenticateAdminRequest } from "@/lib/admin-auth";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import { priorityForTemplate, type TemplateKey } from "@/lib/mail-policy";
-import {
-  getMailProvider,
-} from "@/lib/mail-provider";
+import { getMailProvider } from "@/lib/mail-provider";
 import {
   getAppPolicy,
   recordProviderOutcome,
@@ -14,6 +12,7 @@ import {
 import { reputationAllows } from "@/lib/reputation-guard";
 import { beginTrackedMessage, setTrackedMessageResult, trackingConfigured } from "@/lib/mail-tracking";
 import { isRecipientSuppressed } from "@/lib/supabase-rest";
+import { attachTemplateAttribution } from "@/lib/template-attribution";
 import {
   listTemplateVersions,
   publishTemplateVersion,
@@ -148,8 +147,10 @@ export async function POST(
 
     try {
       await beginTrackedMessage({ trackingId, appId, templateKey, priority, recipient: to, idempotencyKey });
+      await attachTemplateAttribution({ messageId: trackingId, source: "studio_test" });
     } catch {
-      return jsonError("Could not create mandatory tracking record", 503, { code: "tracking_unavailable" });
+      await setTrackedMessageResult({ trackingId, status: "failed", failureCode: "template_attribution_failed" }).catch(() => undefined);
+      return jsonError("Could not create mandatory tracking and template attribution", 503, { code: "tracking_unavailable" });
     }
 
     const reputation = await reputationAllows(appId, priority);
@@ -192,6 +193,7 @@ export async function POST(
         "X-LVL-Mail-Tracking": trackingId,
         "X-LVL-Mail-Priority": priority,
         "X-LVL-Mail-Studio-Test": "true",
+        "X-LVL-Mail-Template-Source": "studio_test",
       },
       tags: [
         { name: "app", value: appId },
@@ -199,6 +201,7 @@ export async function POST(
         { name: "template", value: templateKey },
         { name: "priority", value: priority.toLowerCase() },
         { name: "studio_test", value: "true" },
+        { name: "template_source", value: "studio_test" },
       ],
       idempotencyKey: `${appId}/${idempotencyKey}`,
     });
