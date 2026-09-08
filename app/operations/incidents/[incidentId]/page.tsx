@@ -1,10 +1,10 @@
 import Link from "next/link";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { AppShell, PageHeader } from "@/components/app-shell";
 import { IncidentActions } from "@/components/incident-actions";
 import { resolveRegisteredApp } from "@/lib/app-registry";
 import { getIncident, listIncidentEvents } from "@/lib/operations";
-import { getPagePrincipal, hasPermission } from "@/lib/iam";
+import { canAccessApp, getPagePrincipal, hasPermission } from "@/lib/iam";
 
 export const metadata = { title: "Incidente" };
 
@@ -27,11 +27,16 @@ const eventLabels: Record<string, string> = {
 };
 
 export default async function IncidentPage({ params }: { params: Promise<{ incidentId: string }> }) {
+  const principal = await getPagePrincipal();
+  if (!principal) redirect("/login?error=access");
+  if (!hasPermission(principal.role, "incidents.read")) redirect("/");
+
   const { incidentId } = await params;
   const incident = await getIncident(incidentId);
   if (!incident) notFound();
-  const principal = await getPagePrincipal();
-  const canManage = Boolean(principal && hasPermission(principal.role, "incidents.manage"));
+  if (!canAccessApp(principal, incident.app_id)) redirect("/operations");
+
+  const canManage = hasPermission(principal.role, "incidents.manage");
   const [events, app] = await Promise.all([
     listIncidentEvents(incident.id),
     resolveRegisteredApp(incident.app_id),
