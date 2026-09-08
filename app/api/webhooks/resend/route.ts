@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Resend } from "resend";
 import {
-  recordWebhookEvent,
   supabaseConfigured,
   upsertSuppression,
 } from "@/lib/supabase-rest";
+import { recordTrackedEvent } from "@/lib/mail-tracking";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+type EventTag = { name?: string; value?: string };
 type WebhookEvent = {
   type: string;
   created_at?: string;
@@ -17,7 +18,7 @@ type WebhookEvent = {
     email?: string;
     recipient?: string;
     to?: string[];
-    tags?: Record<string, string>;
+    tags?: Record<string, string> | EventTag[];
     bounce?: { type?: string; subType?: string; message?: string };
   };
 };
@@ -29,9 +30,29 @@ function recipientFrom(event: WebhookEvent) {
   return Array.isArray(to) && typeof to[0] === "string" ? to[0] : null;
 }
 
-function safeEventDetails(event: WebhookEvent) {
+function normalizedTags(value: WebhookEvent["data"] extends infer D
+  ? D extends { tags?: infer T } ? T : never
+  : never) {
+  const result: Record<string, string> = {};
+  if (Array.isArray(value)) {
+    for (const tag of value) {
+      if (tag && typeof tag.name === "string" && typeof tag.value === "string") {
+        result[tag.name] = tag.value;
+      }
+    }
+    return result;
+  }
+  if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (typeof item === "string") result[key] = item;
+    }
+  }
+  return result;
+}
+
+function safeEventDetails(event: WebhookEvent, tags: Record<string, string>) {
   return {
-    tags: event.data?.tags ?? null,
+    tags,
     bounce: event.data?.bounce
       ? {
           type: event.data.bounce.type ?? null,
@@ -65,26 +86,40 @@ export async function POST(request: NextRequest) {
       headers: { id, timestamp, signature },
       webhookSecret: secret,
     });
-    // Resend returns a discriminated union covering email, contact, domain and
-    // suppression events. LVL Mail intentionally projects only the safe fields
-    // it needs after signature verification.
     event = verified as unknown as WebhookEvent;
   } catch {
     return NextResponse.json({ ok: false, error: "Invalid webhook signature" }, { status: 400 });
   }
 
   if (!supabaseConfigured()) {
-    return NextResponse.json({ ok: true, verified: true, persisted: false });
+    // Email delivery without persistence is not a supported production state.
+    // Return 5xx so provider retries rather than silently losing traceability.
+    return NextResponse.json({ ok: false, error: "Tracking persistence is not configured" }, { status: 503 });
   }
 
+  const tags = normalizedTags(event.data?.tags);
+  const trackingId = tags.tracking_id ?? null;
+  const providerEmailId = event.data?.email_id ?? null;
+  const isEmailEvent = event.type.startsWith("email.");
+
   try {
-    await recordWebhookEvent({
-      eventId: id,
-      providerEmailId: event.data?.email_id ?? null,
-      eventType: event.type,
-      payload: safeEventDetails(event),
-      occurredAt: event.created_at ?? null,
-    });
+    if (isEmailEvent) {
+      const linked = await recordTrackedEvent({
+        eventId: id,
+        providerEmailId,
+        trackingId,
+        eventType: event.type,
+        payload: safeEventDetails(event, tags),
+        occurredAt: event.created_at ?? null,
+      });
+
+      // A verified email event without a tracked message is never accepted as
+      // "good enough". Returning 5xx lets Resend retry while the send-side row
+      // or provider id is reconciled.
+      if (!linked) {
+        return NextResponse.json({ ok: false, error: "Email event has no tracking owner" }, { status: 503 });
+      }
+    }
 
     const recipient = recipientFrom(event);
     if (recipient) {
@@ -104,9 +139,13 @@ export async function POST(request: NextRequest) {
       }
     }
   } catch {
-    // Returning 5xx is deliberate so Resend retries its at-least-once webhook delivery.
     return NextResponse.json({ ok: false, error: "Webhook persistence failed" }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true, verified: true, persisted: true });
+  return NextResponse.json({
+    ok: true,
+    verified: true,
+    tracked: isEmailEvent,
+    trackingId: trackingId ?? undefined,
+  });
 }
