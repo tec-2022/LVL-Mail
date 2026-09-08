@@ -31,8 +31,8 @@ export async function updateAuthSession(request: NextRequest) {
     },
   });
 
-  // Keep this adjacent to client creation. Supabase currently recommends
-  // getClaims() for server-side identity verification with cookie sessions.
+  // Keep this adjacent to client creation. Supabase recommends getClaims()
+  // rather than trusting getSession() for server-side identity checks.
   const { data } = await supabase.auth.getClaims();
   const claims = data?.claims;
   const pathname = request.nextUrl.pathname;
@@ -45,12 +45,8 @@ export async function updateAuthSession(request: NextRequest) {
     return NextResponse.redirect(redirect);
   }
 
-  if (claims && pathname === "/login") {
-    const redirect = request.nextUrl.clone();
-    redirect.pathname = "/";
-    redirect.search = "";
-    return NextResponse.redirect(redirect);
-  }
-
+  // Keep /login reachable even with a valid Auth cookie. Membership may have
+  // been disabled after the JWT was issued, and the user needs a way to sign
+  // out or switch accounts without a redirect loop.
   return response;
 }
