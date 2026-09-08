@@ -22,6 +22,7 @@ import {
   recordProviderOutcome,
   reserveSendBudget,
 } from "@/lib/control-plane";
+import { reputationAllows } from "@/lib/reputation-guard";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -120,8 +121,6 @@ export async function POST(request: NextRequest) {
     }, { status: tracked.provider_id ? 202 : 409 });
   }
 
-  // Template enablement is owned by the server-side app policy. A calling app
-  // cannot bypass it by changing its request payload.
   const appPolicy = await getAppPolicy(appId);
   if (!appPolicy.enabled_templates.includes(template)) {
     await setTrackedMessageResult({
@@ -133,6 +132,24 @@ export async function POST(request: NextRequest) {
       code: "template_disabled",
       trackingId: tracked.id,
       appId,
+    });
+  }
+
+  // Reputation is isolated per application. A restricted app may continue to
+  // send P0 authentication mail, but cannot send lower-priority traffic until
+  // its 24-hour bounce/complaint window recovers.
+  const reputation = await reputationAllows(appId, priority);
+  if (!reputation.allowed) {
+    await setTrackedMessageResult({
+      trackingId: tracked.id,
+      status: "blocked",
+      failureCode: "reputation_restricted",
+    }).catch(() => undefined);
+    return jsonError("Application reputation guard blocked non-critical email", 429, {
+      code: "reputation_restricted",
+      trackingId: tracked.id,
+      appId,
+      reputation: reputation.state,
     });
   }
 
@@ -247,6 +264,7 @@ export async function POST(request: NextRequest) {
     status: "accepted",
     delivery: policy,
     tracking: trackingState,
+    reputation: reputation.state.reputation_state,
     quota: {
       minuteUsed: budget.minute_used,
       minuteLimit: budget.minute_limit,
