@@ -23,6 +23,7 @@ import {
 } from "@/lib/control-plane";
 import { reputationAllows } from "@/lib/reputation-guard";
 import { getMailProvider } from "@/lib/mail-provider";
+import { getEffectiveTemplateCopy, renderStudioTemplate } from "@/lib/template-studio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -78,8 +79,15 @@ export async function POST(request: NextRequest) {
   }
 
   let rendered;
+  let templateVersion: "base" | "published" = "base";
   try {
-    rendered = renderTemplate(brand, template, variables);
+    const managedCopy = await getEffectiveTemplateCopy(appId, template);
+    if (managedCopy) {
+      rendered = renderStudioTemplate(brand, template, variables, managedCopy);
+      templateVersion = "published";
+    } else {
+      rendered = renderTemplate(brand, template, variables);
+    }
   } catch (error) {
     return jsonError(error instanceof Error ? error.message : "Invalid template variables", 400);
   }
@@ -212,6 +220,7 @@ export async function POST(request: NextRequest) {
       { name: "tracking_id", value: tracked.id },
       { name: "template", value: template },
       { name: "priority", value: priority.toLowerCase() },
+      { name: "template_source", value: templateVersion },
     ],
     idempotencyKey: `${appId}/${idempotencyKey}`,
   });
@@ -252,6 +261,7 @@ export async function POST(request: NextRequest) {
     trackingId: tracked.id,
     appId,
     template,
+    templateSource: templateVersion,
     priority,
     status: "accepted",
     delivery: policy,
