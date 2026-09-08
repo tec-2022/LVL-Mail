@@ -2,6 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { authProxyConfigured, updateAuthSession } from "@/lib/supabase/auth-proxy";
+import { isTrustedMutation } from "@/lib/security/origin.mjs";
 
 function safeEqual(left: string, right: string) {
   const a = Buffer.from(left);
@@ -53,15 +54,43 @@ function legacyBreakGlass(request: NextRequest) {
   return NextResponse.next({ request });
 }
 
+function secureApiMutation(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  const protectedBoundary = pathname === "/api/admin" || pathname.startsWith("/api/admin/")
+    || pathname === "/api/auth" || pathname.startsWith("/api/auth/");
+  if (!protectedBoundary) return null;
+
+  const trusted = isTrustedMutation({
+    method: request.method,
+    origin: request.headers.get("origin"),
+    secFetchSite: request.headers.get("sec-fetch-site"),
+    authorization: request.headers.get("authorization"),
+    host: request.headers.get("host"),
+    forwardedHost: request.headers.get("x-forwarded-host"),
+    proto: request.nextUrl.protocol,
+    forwardedProto: request.headers.get("x-forwarded-proto"),
+  });
+  if (trusted) return null;
+
+  return NextResponse.json(
+    { ok: false, error: "Untrusted request origin", code: "origin_forbidden" },
+    { status: 403, headers: { "Cache-Control": "no-store" } },
+  );
+}
+
 export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    const blocked = secureApiMutation(request);
+    return blocked ?? NextResponse.next({ request });
+  }
+
   // Break-glass remains usable during IAM bootstrap even after Supabase Auth is
-  // configured. This is required to invite/bootstrap the first Owner. Disable
-  // it explicitly once staff login has been validated in production.
+  // configured. Disable it explicitly once staff login has been validated.
   if (validBreakGlass(request)) return NextResponse.next({ request });
   if (authProxyConfigured()) return await updateAuthSession(request);
   return legacyBreakGlass(request);
 }
 
 export const config = {
-  matcher: ["/((?!api(?:/|$)|_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],
 };
