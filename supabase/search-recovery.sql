@@ -49,11 +49,16 @@ revoke all on table public.mail_replay_audit from anon, authenticated;
 grant select, insert, update, delete on public.mail_recovery_envelopes to service_role;
 grant select, insert on public.mail_replay_audit to service_role;
 
--- Exact-match operational search. Recipient lookup uses a SHA-256 hash generated
--- on the server, so the ledger never needs the recipient address in clear text.
+-- Remove the pre-scope overload so internal callers cannot accidentally execute an
+-- unrestricted search after app-scoped IAM is enabled.
+drop function if exists public.mail_search_messages(text,text,text,integer,text,text,text,timestamptz,timestamptz,integer);
+
+-- Exact-match operational search. p_allowed_app_ids is NULL for a global principal
+-- and a non-empty allow-list for scoped staff. Recipient lookup uses SHA-256.
 create or replace function public.mail_search_messages(
   p_query text,
   p_app_id text,
+  p_allowed_app_ids text[],
   p_template_key text,
   p_template_version integer,
   p_status text,
@@ -109,7 +114,8 @@ as $$
     m.updated_at
   from public.mail_messages m
   where
-    (nullif(trim(p_query), '') is null
+    (p_allowed_app_ids is null or m.app_id = any(p_allowed_app_ids))
+    and (nullif(trim(p_query), '') is null
       or m.id::text = trim(p_query)
       or m.provider_id = trim(p_query)
       or m.idempotency_key = trim(p_query))
@@ -180,10 +186,10 @@ begin
 end;
 $$;
 
-revoke execute on function public.mail_search_messages(text,text,text,integer,text,text,text,timestamptz,timestamptz,integer) from public, anon, authenticated;
+revoke execute on function public.mail_search_messages(text,text,text[],text,integer,text,text,text,timestamptz,timestamptz,integer) from public, anon, authenticated;
 revoke execute on function public.mail_claim_replay(uuid,uuid,text,text) from public, anon, authenticated;
 revoke execute on function public.mail_purge_expired_recovery_envelopes() from public, anon, authenticated;
 
-grant execute on function public.mail_search_messages(text,text,text,integer,text,text,text,timestamptz,timestamptz,integer) to service_role;
+grant execute on function public.mail_search_messages(text,text,text[],text,integer,text,text,text,timestamptz,timestamptz,integer) to service_role;
 grant execute on function public.mail_claim_replay(uuid,uuid,text,text) to service_role;
 grant execute on function public.mail_purge_expired_recovery_envelopes() to service_role;
